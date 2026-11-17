@@ -1,0 +1,2 @@
+<import src="../../ui.wxml" />
+<template is="screen" data="{{isHome, view, metric, ledger, ledgerRecords, selectedLead, busy, notice, editingName}}" />

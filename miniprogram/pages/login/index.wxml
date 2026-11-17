@@ -1,0 +1,37 @@
+<view class="screen login-screen">
+  <view class="hero"><text>沪紫律师事务所</text><view class="title">股民索赔宝</view><view>{{changing ? '设置个人密码' : recovering ? '忘记密码' : registering ? '注册股民账号' : '账号密码登录'}}</view></view>
+  <view wx:if="{{notice}}" class="notice">{{notice}}</view>
+  <form wx:if="{{changing || recovering}}" class="panel" bindsubmit="submit">
+    <block wx:if="{{changing}}">
+      <view class="muted">后台已重置密码。请验证临时密码，并设置自己的新密码后继续使用。</view>
+      <label>临时密码<input name="currentPassword" password="true" maxlength="128" /></label>
+    </block>
+    <block wx:else>
+      <view class="muted">输入已保存的个人恢复码，或管理员核实身份后提供的临时恢复码。没有恢复码，请联系律所管理员协助。</view>
+      <label>登录账号<input name="username" maxlength="40" placeholder="手机号或后台开通的账号" /></label>
+      <label>恢复码<input name="code" maxlength="80" placeholder="粘贴保存的恢复码" /></label>
+    </block>
+    <label>新密码<input name="password" password="true" maxlength="128" placeholder="至少 8 位" /></label>
+    <label>确认新密码<input name="confirm" password="true" maxlength="128" /></label>
+    <view wx:if="{{error}}" class="field-error">{{error}}</view>
+    <button class="primary" form-type="submit" loading="{{busy}}" disabled="{{busy}}">设置新密码</button>
+    <button wx:if="{{changing}}" class="secondary" bindtap="backToLogin" disabled="{{busy}}">返回登录</button>
+    <button wx:else class="secondary" bindtap="toggleRecovery" disabled="{{busy}}">返回登录</button>
+  </form>
+  <form wx:elif="{{registering}}" class="panel" bindsubmit="submit">
+    <label>手机号<input name="phone" type="number" maxlength="11" placeholder="手机号将用于登录" /></label>
+    <label>密码<input name="password" password="true" maxlength="128" placeholder="至少 8 位" /></label>
+    <label>确认密码<input name="confirm" password="true" maxlength="128" placeholder="再输入一次密码" /></label>
+    <view wx:if="{{error}}" class="field-error">{{error}}</view>
+    <button class="primary" form-type="submit" loading="{{busy}}" disabled="{{busy}}">注册并登录</button>
+    <button class="secondary" bindtap="toggle" disabled="{{busy}}">返回登录</button>
+  </form>
+  <form wx:else class="panel" bindsubmit="submit">
+    <label>登录账号<input name="username" maxlength="40" placeholder="手机号或后台开通的账号" /></label>
+    <label>密码<input name="password" password="true" maxlength="128" /></label>
+    <view wx:if="{{error}}" class="field-error">{{error}}</view>
+    <button class="primary" form-type="submit" loading="{{busy}}" disabled="{{busy}}">登录</button>
+    <button class="secondary" bindtap="toggle" disabled="{{busy}}">首次使用？注册股民账号</button>
+    <button class="secondary" bindtap="toggleRecovery" disabled="{{busy}}">忘记密码</button>
+  </form>
+</view>

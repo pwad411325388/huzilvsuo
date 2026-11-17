@@ -1,0 +1,145 @@
+<template name="record">
+  <view class="record">
+    <view class="line"><text class="strong">{{record.title}}</text><text class="tag">{{record.status}}</text></view>
+    <view class="muted" wx:if="{{record.subtitle}}">{{record.subtitle}}</view>
+    <view class="muted" wx:if="{{record.phone}}">手机 {{record.phone}}</view>
+    <view class="muted" wx:if="{{record.openedOn}}">登记日期 {{record.openedOn}}</view>
+    <view class="muted" wx:if="{{record.signedOn}}">签约日期 {{record.signedOn}}</view>
+  </view>
+</template>
+
+<template name="board">
+  <view class="panel">
+    <view class="heading">{{sales ? '券商合作统计' : '数据看板'}}</view>
+    <view class="muted" wx:if="{{sales}}">按券商合作负责人统计。经办留资请到首页查看。</view>
+    <view class="metrics">
+      <view class="metric" wx:for="{{metrics}}" wx:key="label">
+        <view class="muted">{{item.label}}</view><view class="count">{{item.value}} <text>{{item.unit}}</text></view>
+      </view>
+    </view>
+    <view class="chips">
+      <button class="chip {{index == metric ? 'selected' : ''}}" wx:for="{{metrics}}" wx:key="label" bindtap="pickMetric" data-index="{{index}}">{{item.label}}</button>
+    </view>
+    <view class="line subheading"><text>{{metrics[metric].label}}</text><text class="muted">{{metrics[metric].value}} {{metrics[metric].unit}}</text></view>
+    <block wx:for="{{metrics[metric].records}}" wx:key="id">
+      <template is="record" data="{{record: item, follow: false, busy: busy}}" />
+    </block>
+    <view class="empty" wx:if="{{!metrics[metric].value}}">暂无符合条件的记录</view>
+  </view>
+</template>
+
+<template name="screen">
+  <view class="screen">
+    <view wx:if="{{notice}}" class="notice">{{notice}}</view>
+    <view wx:if="{{view ? !isHome : false}}" class="panel account-summary">
+      <view class="line"><view><view class="heading">{{view.actor.name}}</view><view class="muted">账号 {{view.actor.account}}</view></view>
+        <button class="secondary" bindtap="logout" disabled="{{busy}}">退出登录</button></view>
+      <button wx:if="{{view.actor.role === 'investor'}}" class="secondary edit-name" bindtap="toggleName" disabled="{{busy}}">{{editingName ? '取消修改' : '修改显示名称'}}</button>
+      <button class="secondary edit-name" bindtap="toggleSecurity" disabled="{{busy}}">{{security ? '关闭账号安全' : '账号安全'}}</button>
+      <form wx:if="{{editingName}}" bindsubmit="submit" data-type="name">
+        <label>显示名称<input name="name" value="{{view.actor.name}}" maxlength="40" /></label>
+        <button class="primary" form-type="submit" disabled="{{busy}}">保存名称</button>
+      </form>
+      <view wx:if="{{security}}">
+        <view class="heading subheading">修改密码</view>
+        <view class="muted">修改后所有设备需要重新登录，旧恢复码失效。</view>
+        <form bindsubmit="submitSecurity" data-type="change">
+          <label>当前密码<input name="currentPassword" password="true" maxlength="128" /></label>
+          <label>新密码<input name="password" password="true" maxlength="128" placeholder="至少 8 位" /></label>
+          <label>确认新密码<input name="confirm" password="true" maxlength="128" /></label>
+          <button class="primary" form-type="submit" disabled="{{busy}}">保存新密码</button>
+        </form>
+        <view class="heading subheading">备用恢复码</view>
+        <view class="muted">预先生成并妥善保存，忘记密码时使用。每个码仅能使用一次，重新生成或修改密码后旧码失效。</view>
+        <form bindsubmit="submitSecurity" data-type="code">
+          <label>当前密码<input name="currentPassword" password="true" maxlength="128" /></label>
+          <button class="secondary" form-type="submit" disabled="{{busy}}">生成新的恢复码</button>
+        </form>
+        <view wx:if="{{recoveryCode}}" class="notice"><text selectable="true">{{recoveryCode}}</text>
+          <button class="secondary" bindtap="copyRecoveryCode">复制恢复码</button>
+          <view>仅本次显示，请保存到安全位置。</view>
+        </view>
+      </view>
+    </view>
+    <view wx:if="{{!view}}" class="empty">{{busy ? '正在加载业务数据…' : '暂无可显示的数据'}}</view>
+    <block wx:elif="{{view.actor.role === 'investor'}}">
+      <block wx:if="{{isHome}}">
+        <view class="hero"><text>沪紫律师事务所</text><view class="title">了解股票索赔</view><view>提交资料，由律所人员联系并评估索赔条件。</view></view>
+        <form class="panel" bindsubmit="submit" data-type="lead">
+          <view class="heading">提交咨询资料</view>
+          <label>姓名<input name="name" maxlength="40" /></label>
+          <label>手机号码<input name="phone" type="number" maxlength="11" bindinput="clearPhoneError"
+            class="{{phoneInvalid ? 'invalid-input' : ''}}" placeholder="以 1 开头的 11 位数字" /></label>
+          <view class="field-error" wx:if="{{phoneInvalid}}">请输入以 1 开头的 11 位手机号。</view>
+          <label>股票名称<input name="stockName" maxlength="50" /></label><label>股票代码<input name="stockCode" maxlength="20" placeholder="如 600000 或 NVDA" /></label>
+          <view class="label">大致买入时段</view><picker range="{{periods}}" bindchange="pickPeriod"><view class="input">{{period || '请选择'}}</view></picker>
+          <checkbox-group name="consent"><label class="consent"><checkbox value="yes" />我同意将资料用于联系与咨询。</label></checkbox-group>
+          <button class="primary" form-type="submit" disabled="{{busy}}">提交留资</button>
+        </form>
+      </block>
+      <block wx:elif="{{selectedLead}}">
+        <view class="panel"><button class="secondary" bindtap="closeLead">返回留资记录</button>
+          <view class="heading subheading">{{selectedLead.stockName}} · {{selectedLead.stockCode}}</view>
+          <block wx:for="{{selectedLead.cases}}" wx:key="id"><template is="record" data="{{record: item}}" /></block>
+          <view wx:if="{{!selectedLead.cases.length}}" class="record"><view class="line"><text>当前状态</text><text class="tag">留资</text></view><view class="muted">已收到资料，尚未建立案件。</view></view>
+        </view>
+      </block>
+      <block wx:else>
+        <view class="hero"><text>股民端</text><view class="title">我的留资记录</view><view>查看已提交的咨询与当前案件状态。</view></view>
+        <view wx:if="{{view.contact}}" class="panel profile-contact">
+          <view><view class="muted">留资姓名</view><view class="strong">{{view.contact.name}}</view></view>
+          <view><view class="muted">留资手机号</view><view class="strong">{{view.contact.phone}}</view></view>
+        </view>
+        <view class="panel"><view class="heading">留资记录</view>
+          <button class="record lead-button" wx:for="{{view.leads}}" wx:key="id" bindtap="showLead" data-id="{{item.id}}">
+            <view class="line"><text class="strong">{{item.stockName}} · {{item.stockCode}}</text><text class="tag">{{item.cases.length ? item.cases.length + ' 件案件' : '留资'}}</text></view>
+            <view class="muted">{{item.createdOn}}</view></button>
+          <view wx:if="{{!view.leads.length}}" class="empty">暂无留资记录</view></view>
+        <view class="panel"><view class="heading">转介绍</view><button class="secondary" open-type="share">分享咨询入口</button></view>
+      </block>
+    </block>
+    <block wx:elif="{{view.actor.role === 'sales'}}">
+      <block wx:if="{{isHome}}">
+        <view class="hero"><text>销售端</text><view class="title">销售工作台</view><view>按公司派单，跟进分配给自己的具体留资。</view></view>
+        <view class="panel"><view class="heading">分派给我的留资</view><view class="chips">
+          <button class="chip {{followFilter === '待跟进' ? 'selected' : ''}}" bindtap="pickFollow" data-status="待跟进">待跟进</button>
+          <button class="chip {{followFilter === '已跟进' ? 'selected' : ''}}" bindtap="pickFollow" data-status="已跟进">已跟进</button>
+          <button class="chip {{followFilter === '' ? 'selected' : ''}}" bindtap="pickFollow" data-status="">全部</button></view>
+          <view class="muted">共 {{assignedRecords.length}} 条</view>
+          <view class="record" wx:for="{{assignedRecords}}" wx:key="id">
+            <view class="line"><text class="strong">{{item.name}}</text><text class="tag">{{item.status}}</text></view>
+            <view class="muted">{{item.number}} · {{item.createdOn}}</view>
+            <view>{{item.stockName}} · {{item.stockCode}}</view><view class="muted">核对公司 {{item.companyName}}</view>
+            <view class="muted">手机 {{item.phone}} · 渠道 {{item.brokerName || '自然流入'}}</view>
+            <view class="muted" wx:for="{{item.cases}}" wx:for-item="record" wx:key="id">案件 {{record.title}} · {{record.status}}</view>
+            <view class="muted" wx:for="{{item.followups}}" wx:for-item="note" wx:key="id">{{note.salesName}} · {{note.note}}</view>
+            <form bindsubmit="submit" data-type="followup" data-id="{{item.id}}" data-version="{{item.version}}" class="follow">
+              <input name="note" placeholder="填写本条留资的跟进记录" maxlength="500" />
+              <button class="secondary" form-type="submit" disabled="{{busy}}">保存跟进</button></form>
+          </view><view class="empty" wx:if="{{!assignedRecords.length}}">暂无分配给你的留资</view>
+        </view>
+        <form class="panel" bindsubmit="submit" data-type="cooperation"><view class="heading">登记合作</view>
+          <label>券商名称<input name="name" maxlength="100" /></label><view class="label">签约日期</view>
+          <picker mode="date" value="{{signedOn}}" bindchange="pickDate"><view class="input">{{signedOn}}</view></picker>
+          <button class="primary" form-type="submit" disabled="{{busy}}">保存签约绑定</button></form>
+      </block>
+      <block wx:else>
+        <view class="hero"><text>销售端</text><view class="title">合作渠道统计</view><view>查看所负责券商带来的客户和案件。</view></view>
+        <template is="board" data="{{metrics: view.metrics, metric: metric, sales: true, busy: busy}}" />
+      </block>
+    </block>
+    <block wx:else>
+      <view class="hero"><text>券商端</text><view class="title">{{view.broker.name}}</view><view>{{isHome ? '客户与案件统计' : '名下客户台账'}}</view></view>
+      <block wx:if="{{isHome}}">
+        <view class="panel"><view class="heading">专属推广码</view><view class="muted">测试码 {{view.broker.code}}</view>
+          <view class="chips"><button class="secondary" bindtap="copyCode">复制测试码</button><button class="secondary" open-type="share">分享入口</button></view></view>
+        <template is="board" data="{{metrics: view.metrics, metric: metric, sales: false, busy: busy}}" />
+      </block>
+      <view wx:else class="panel"><view class="heading">客户台账</view><view class="chips">
+        <button class="chip {{ledger === '洽谈中' ? 'selected' : ''}}" bindtap="pickLedger" data-status="洽谈中">洽谈中</button>
+        <button class="chip {{ledger === '已签约' ? 'selected' : ''}}" bindtap="pickLedger" data-status="已签约">已签约</button></view>
+        <block wx:for="{{ledgerRecords}}" wx:key="id"><template is="record" data="{{record: item}}" /></block>
+        <view wx:if="{{!ledgerRecords.length}}" class="empty">暂无符合条件的记录</view></view>
+    </block>
+  </view>
+</template>

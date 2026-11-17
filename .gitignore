@@ -1,0 +1,8 @@
+node_modules/
+.runtime/
+.env*
+project.private.config.json
+data.js
+*.sqlite*
+*.zip
+交互原型/

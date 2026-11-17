@@ -1,0 +1,39 @@
+.broker-accounts { min-width: 0; }
+.broker-search-form { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(140px, 190px) auto; gap: 12px; align-items: end; }
+.broker-search-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.broker-list-meta { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 16px; margin-top: 15px; }
+.broker-list-meta p { margin: 0; font-size: .88rem; color: var(--muted, #58687c); }
+.broker-status-counts { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+.broker-status-counts > span { padding: 3px 9px; border-radius: 6px; background: #f1f5f9; color: var(--muted, #58687c); font-size: .82rem; }
+.broker-status-counts strong { color: var(--navy, #152b49); margin-left: 4px; }
+.broker-account-list { display: grid; gap: 8px; }
+.broker-account-row { border: 1px solid var(--line, #dce4ed); border-radius: 8px; min-width: 0; background: #fff; }
+.broker-account-row > summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px; list-style: none; border-radius: 8px; }
+.broker-account-row > summary::-webkit-details-marker { display: none; }
+.broker-account-row > summary:hover { background: #f7f9fc; }
+.broker-account-row[open] > summary { background: #f3f7fb; border-radius: 8px 8px 0 0; }
+.broker-account-pending { border-color: #edce8a; }
+.broker-account-pending > summary { background: #fffaf0; }
+.broker-account-pending .tag { background: #fff0c5; color: #735318; }
+.broker-account-closed .tag { background: #f1f2f4; color: #666; }
+.broker-summary-main { min-width: 0; display: grid; gap: 4px; }
+.broker-summary-main strong { overflow-wrap: anywhere; }
+.broker-summary-main small { color: var(--muted, #58687c); overflow-wrap: anywhere; font-size: .83rem; }
+.broker-summary-end { display: flex; align-items: center; justify-content: end; gap: 12px; flex: 0 0 auto; }
+.broker-expand-label { color: #395979; font-size: .8rem; white-space: nowrap; }
+.broker-expand-label::after { content: ' ▾'; display: inline-block; margin-left: 5px; }
+.broker-account-row[open] .broker-expand-label::after { transform: rotate(180deg); }
+.broker-account-detail { padding: 0 14px 14px; }
+.broker-account-facts { display: flex; gap: 10px 30px; flex-wrap: wrap; margin: 12px 0 0; }
+.broker-account-facts > div { min-width: 120px; flex: 1 1 150px; }
+.broker-account-facts dt { color: var(--muted, #58687c); font-weight: 400; font-size: .8rem; }
+.broker-account-facts dd { margin: 3px 0 0; color: var(--ink, #1b2940); overflow-wrap: anywhere; }
+.broker-open-form { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto; align-items: end; gap: 10px; margin-top: 14px; }
+.broker-open-error { grid-column: 1 / -1; margin: 0; color: #972d27; font-size: .88rem; }
+.broker-load-error { border: 1px solid #f2cac3; background: #fdece9; color: #972d27; padding: 10px 12px; border-radius: 8px; margin: 10px 0; }
+.broker-pagination { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 14px; margin-top: 16px; }
+.broker-pagination[hidden], .broker-load-error[hidden], .broker-open-error[hidden], .broker-retry[hidden] { display: none; }
+.broker-pagination > span { color: var(--muted, #58687c); font-size: .88rem; }
+.broker-retry { margin-top: 10px; }
+@media (max-width: 760px) { .broker-search-form { grid-template-columns: minmax(0, 1fr) minmax(120px, 160px); } .broker-search-actions { grid-column: 1 / -1; } .broker-open-form { grid-template-columns: 1fr 1fr; } .broker-open-form > button { grid-column: 1 / -1; justify-self: start; } }
+@media (max-width: 460px) { .broker-search-form, .broker-open-form { grid-template-columns: 1fr; } .broker-summary-end { gap: 7px; flex-direction: column; align-items: end; } .broker-account-row > summary { padding: 11px; } .broker-account-detail { padding-inline: 11px; } }

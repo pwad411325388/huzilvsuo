@@ -1,0 +1,53 @@
+{
+  "appid": "touristappid",
+  "projectname": "huzilvsuo",
+  "compileType": "miniprogram",
+  "miniprogramRoot": "miniprogram/",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "postcss": false,
+    "compileWorklet": false,
+    "minified": false,
+    "uglifyFileName": false,
+    "uploadWithSourceMap": true,
+    "enhance": false,
+    "packNpmManually": false,
+    "packNpmRelationList": [],
+    "minifyWXSS": true,
+    "minifyWXML": true,
+    "localPlugins": false,
+    "disableUseStrict": false,
+    "useCompilerPlugins": false,
+    "condition": false,
+    "swc": false,
+    "disableSWC": true,
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    }
+  },
+  "condition": {
+    "miniprogram": {
+      "list": [
+        {
+          "name": "券商 A 测试扫码",
+          "pathName": "pages/home/index",
+          "query": "scene=DEMO-A"
+        },
+        {
+          "name": "券商 B 测试扫码",
+          "pathName": "pages/home/index",
+          "query": "scene=DEMO-B"
+        }
+      ]
+    }
+  },
+  "simulatorPluginLibVersion": {},
+  "packOptions": {
+    "ignore": [],
+    "include": []
+  },
+  "editorSetting": {}
+}
