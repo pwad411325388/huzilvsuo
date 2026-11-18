@@ -58,7 +58,7 @@ function renderItems(items) {
   }).join('');
 }
 
-function renderDetail(item) {
+function renderDetail(item, initialPasswordHint) {
   const pending = statusOf(item) === 'pending';
   return `<dl class="broker-account-facts"><div><dt>合作负责人</dt><dd>${escapeHtml(salesName(item))}</dd></div>
     <div><dt>签约日期</dt><dd>${escapeHtml(item.signedOn || '未登记')}</dd></div>
@@ -66,13 +66,13 @@ function renderDetail(item) {
     ${pending ? `<form data-broker-open class="broker-open-form">
       <input type="hidden" name="brokerId" value="${escapeHtml(item.id)}">
       <label class="field"><span>专用账号</span><input name="username" minlength="3" maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9._\\-]{2,39}" title="3 到 40 位字母、数字或 . _ -" autocomplete="off" required></label>
-      <label class="field"><span>初始密码</span><input name="password" type="password" minlength="8" maxlength="128" placeholder="至少 8 位" autocomplete="new-password" required></label>
+      <p class="muted">${escapeHtml(initialPasswordHint)}</p>
       <button class="primary" type="submit">开通账号</button>
       <p class="broker-open-error" data-broker-open-error role="alert" hidden></p>
     </form>` : ''}`;
 }
 
-export function mountBrokerAccounts(root, { request, onError, onState, onChanged, onNotice } = {}) {
+export function mountBrokerAccounts(root, { request, onError, onState, onChanged, onNotice, initialPasswordHint = '' } = {}) {
   const panel = root?.matches?.('[data-broker-accounts]') ? root : root?.querySelector?.('[data-broker-accounts]');
   if (!panel) return null;
   if (mountedPanels.has(panel)) return mountedPanels.get(panel);
@@ -170,15 +170,14 @@ export function mountBrokerAccounts(root, { request, onError, onState, onChanged
     submit.disabled = true;
     submit.textContent = '正在开户…';
     try {
-      await request('/accounts', { brokerId: row.id, username: values.username, password: values.password });
+      await request('/accounts', { brokerId: row.id, username: values.username });
       if (!connected()) return;
-      form.elements.password.value = '';
       // Stop any list response from repainting while the parent replaces its view.
       controller?.abort();
       generation += 1;
       if (onChanged) await onChanged();
       else { opening = false; await load(filters); }
-      onNotice?.('券商账号已开通');
+      onNotice?.(`券商账号已开通。${initialPasswordHint}`);
     } catch (error) {
       if (!connected()) return;
       if (form.isConnected) {
@@ -227,7 +226,7 @@ export function mountBrokerAccounts(root, { request, onError, onState, onChanged
     if (!connected() || !details.matches?.('[data-broker-row]') || !details.open || details.dataset.brokerLoaded) return;
     const item = items[Number(details.dataset.brokerIndex)];
     if (!item) return;
-    details.querySelector('[data-broker-detail]').innerHTML = renderDetail(item);
+    details.querySelector('[data-broker-detail]').innerHTML = renderDetail(item, initialPasswordHint);
     details.dataset.brokerLoaded = 'true';
   }
 

@@ -3,7 +3,7 @@
   <view wx:if="{{notice}}" class="notice">{{notice}}</view>
   <form wx:if="{{changing || recovering}}" class="panel" bindsubmit="submit">
     <block wx:if="{{changing}}">
-      <view class="muted">后台已重置密码。请验证临时密码，并设置自己的新密码后继续使用。</view>
+      <view class="muted">请输入管理员提供的临时密码，再设置自己的登录密码。</view>
       <label>临时密码<input name="currentPassword" password="true" maxlength="128" /></label>
     </block>
     <block wx:else>

@@ -67,12 +67,33 @@ test('客户明细按客户去重并汇总股票，展示当前资料和首次�
   assert.equal(detail.rows.length, 2);
   assert.deepEqual(detail.rows[0], {
     customer: '现用姓名', phone: '19900000001', stocks: '甲公司（AAA） · 2 条；乙公司（BBB） · 1 条',
-    firstBroker: '首次券商', broker: '当前券商', sales: '冬天、夏天', signedOn: '2026-11-01',
+    firstBroker: '首次券商', broker: '当前券商', owner: '冬天', sales: '冬天、夏天', signedOn: '2026-11-01',
   });
   assert.equal(detail.rows[1].broker, '自然流入');
+  assert.equal(detail.rows[1].owner, '无券商归属');
   const signed = buildOverviewDetail(fixture(), 7);
   assert.equal(signed.rows[0].stocks, detail.rows[0].stocks);
   assert.equal(signed.rows[1].stocks, '暂无留资');
+});
+
+test('转派留资后客户仍归当前券商负责人，可按归属销售搜索留资和本月签约客户', () => {
+  const view = fixture();
+  for (const lead of view.assignments) lead.salesName = '实际经办销售';
+  for (const index of [1, 7]) {
+    const detail = buildOverviewDetail(view, index);
+    assert.equal(detail.rows[0].owner, '冬天');
+    assert.equal(detail.rows[0].sales, '实际经办销售');
+    const html = renderOverviewDetail(view, { index, q: '冬天', offset: 0 }, ui);
+    assert.match(html, /客户归属销售<\/th>/);
+    assert.match(html, /留资经办销售<\/th>/);
+    assert.match(html, /现用姓名/);
+    assert.doesNotMatch(html, /乙客户/);
+  }
+  const broker = view.brokers[1];
+  broker.salesName = broker.salesId = 'hidden-legacy-id';
+  const html = renderOverviewDetail(view, { index: 1, q: '' }, ui);
+  assert.match(html, /未登记姓名/);
+  assert.doesNotMatch(html, /hidden-legacy-id/);
 });
 
 test('渠道不含自然流入，待分配包含历史待核对，案件按准确状态展示', () => {

@@ -1,0 +1,19 @@
+.progress-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6rpx 16rpx; margin-bottom: 18rpx; }
+.progress-heading .heading { margin: 0; }
+.progress-stage { color: #435974; font-size: 25rpx; }
+.step-list { padding: 2rpx 0; }
+.step-key { margin-top: 12rpx; font-size: 23rpx; }
+.step-row { position: relative; display: flex; align-items: flex-start; gap: 17rpx; min-height: 44rpx; padding-bottom: 18rpx; }
+.step-row:last-child { padding-bottom: 0; }
+.step-mark { position: relative; z-index: 1; flex: none; box-sizing: border-box; width: 22rpx; height: 22rpx; margin: 10rpx 0 0 3rpx; border: 3rpx solid #95a6b9; border-radius: 50%; background: #fff; }
+.step-connector { position: absolute; top: 21rpx; bottom: -21rpx; left: 13rpx; width: 2rpx; background: #cbd5df; }
+.step-content { flex: 1; min-width: 0; padding-bottom: 4rpx; }
+.step-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4rpx 12rpx; min-height: 42rpx; }
+.step-label { color: #58687c; font-size: 28rpx; overflow-wrap: anywhere; }
+.step-current .step-mark { border: 5rpx solid #153a61; background: #f1c76d; }
+.step-current .step-label { color: #152b49; font-weight: 700; }
+.step-completed .step-mark { display: flex; align-items: center; justify-content: center; color: #fff; background: #3e6a60; border-color: #3e6a60; font-size: 15rpx; font-weight: 700; line-height: 1; }
+.step-badge { padding: 0 10rpx; border-radius: 7rpx; line-height: 1.6; font-size: 22rpx; white-space: nowrap; }
+.step-current .step-badge { color: #684612; background: #fff0ca; font-weight: 700; }
+.step-completed .step-badge { color: #30584f; background: #e5f0ec; }
+.contract { margin-top: 10rpx; color: #435974; font-size: 25rpx; overflow-wrap: anywhere; word-break: break-all; }

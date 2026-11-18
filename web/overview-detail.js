@@ -8,7 +8,7 @@ const leadColumns = columns([
 ]);
 const clientColumns = columns([
   ['customer', '客户'], ['phone', '手机号'], ['stocks', '股票线索'], ['firstBroker', '首次券商'], ['broker', '当前券商'],
-  ['sales', '经办销售'], ['signedOn', '签约日期'],
+  ['owner', '客户归属销售'], ['sales', '留资经办销售'], ['signedOn', '签约日期'],
 ]);
 const caseColumns = columns([
   ['number', '案件编号'], ['customer', '客户'], ['phone', '手机号'], ['title', '案件名称'], ['stockName', '股票名称'],
@@ -31,7 +31,7 @@ function leadRow(lead) {
 
 function customerRows(view, selectedIds) {
   const clients = new Map(view.clients.map(client => [client.id, client]));
-  const brokers = new Map(view.brokers.map(broker => [broker.id, broker.name]));
+  const brokers = new Map(view.brokers.map(broker => [broker.id, broker]));
   const leadsByClient = new Map();
   for (const lead of view.assignments) {
     if (!leadsByClient.has(lead.clientId)) leadsByClient.set(lead.clientId, []);
@@ -40,6 +40,7 @@ function customerRows(view, selectedIds) {
   return selectedIds.map(id => {
     const leads = leadsByClient.get(id) || [];
     const client = clients.get(id) || {};
+    const broker = brokers.get(client.brokerId);
     const stocks = new Map();
     for (const lead of leads) {
       const stockName = lead.stockName || '';
@@ -52,8 +53,9 @@ function customerRows(view, selectedIds) {
     return {
       customer: client.name || leads[0]?.name || '未登记姓名', phone: client.phone || leads[0]?.phone || '—',
       stocks: [...stocks.values()].map(stock => `${stock.stockName || '未填股票名称'}${stock.stockCode ? `（${stock.stockCode}）` : ''} · ${stock.count} 条`).join('；') || '暂无留资',
-      firstBroker: client.firstBrokerName || brokers.get(client.firstBrokerId) || '未关联',
-      broker: client.brokerName || brokers.get(client.brokerId) || '自然流入',
+      firstBroker: client.firstBrokerName || brokers.get(client.firstBrokerId)?.name || '未关联',
+      broker: client.brokerName || broker?.name || '自然流入',
+      owner: client.brokerId ? (broker?.salesName && broker.salesName !== broker.salesId ? broker.salesName : '未登记姓名') : '无券商归属',
       sales: [...new Set(leads.map(lead => lead.salesName || '待分配'))].join('、') || '—', signedOn: client.signedOn || '未签约',
     };
   });
@@ -82,6 +84,7 @@ export function buildOverviewDetail(view, index) {
     tableColumns = clientColumns;
     description = index === 1 ? '按留资客户去重，一位客户一行；姓名和电话显示当前资料，股票线索合并同一股票的留资条数。'
       : `按客户实际签约日期统计 ${month} 的签约客户，一位客户一行；股票线索汇总该客户全部留资。`;
+    description += '客户归属销售取当前券商的合作负责人，留资经办销售按每条股票留资的分派结果显示。';
   } else if (index === 2) {
     const realBrokerIds = new Set(view.brokers.map(broker => broker.id));
     rows = channelRows(view).filter(channel => realBrokerIds.has(channel.id)).map(channel => ({
@@ -125,7 +128,7 @@ export function renderOverviewDetail(view, selection, ui) {
       <p>总计 ${detail.total} ${safe(detail.unit)} · 检索结果 <strong data-overview-filtered="${filtered.length}">${filtered.length}</strong> ${safe(detail.unit)}</p>
       <p>${safe(detail.description)}</p>
       <form data-form="overview-detail-search" class="inline-form">
-        ${field('搜索明细', `<input name="q" value="${safe(q)}" maxlength="100" placeholder="股票、姓名、代码、电话、券商或经办销售">`)}
+        ${field('搜索明细', `<input name="q" value="${safe(q)}" maxlength="100" placeholder="股票、姓名、代码、电话、券商或销售">`)}
         <button class="primary" type="submit">搜索明细</button>${button('重置', 'overview-reset', '', 'class="secondary"')}
       </form>${table}
       <div class="filters">${button('上一页', 'overview-page', Math.max(0, offset - PAGE_SIZE), `class="secondary"${offset === 0 ? ' disabled' : ''}`)}

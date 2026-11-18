@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { createStore } from '../store.mjs';
+import { activateStoredAccount } from '../test-support/business-account.mjs';
 import { createAppServer } from '../server.mjs';
 
 test('后台客户检索按业务范围、姓名及手机号分页，权限和输入均受校验', async t => {
@@ -16,7 +17,9 @@ test('后台客户检索按业务范围、姓名及手机号分页，权限和�
   const adminToken = store.createSession(adminIdentity.id);
   const investorId = store.registerInvestor({ phone: '19900008800', password: 'investor-password' });
   const investorToken = store.createSession(investorId);
-  store.openSalesAccount({ role: 'admin', id: adminIdentity.subjectId }, { salesId: 'sales-a', name: '检索测试销售', username: 'search-sales', password: 'sales-password' });
+  store.openSalesAccount({ role: 'admin', id: adminIdentity.subjectId }, { salesId: 'sales-a', name: '检索测试销售', username: 'search-sales' });
+  activateStoredAccount(store, 'search-sales', 'sales-password');
+  activateStoredAccount(store, 'broker-a', 'demo-broker-a');
   const salesToken = store.createSession(store.verifyLogin({ username: 'search-sales', password: 'sales-password' }).id);
   const brokerToken = store.createSession(store.verifyLogin({ username: 'broker-a', password: 'demo-broker-a' }).id);
   store.close();
@@ -133,6 +136,7 @@ test('后台客户检索按业务范围、姓名及手机号分页，权限和�
       const client = result.items[0];
       assert.equal(client.firstBrokerName, '示例券商 B');
       assert.equal(client.brokerName, '示例券商 A');
+      assert.equal(client.ownerSalesName, '检索测试销售');
       assert.equal(client.signedOn, '2026-11-17');
       assert.equal(client.stocks.length, 3, 'all stocks are returned even when one stock matched');
       assert.equal(client.stocks.find(stock => stock.stockCode === 'STOCK-A').leadCount, 2);
@@ -149,6 +153,19 @@ test('后台客户检索按业务范围、姓名及手机号分页，权限和�
     const blankStock = await search({ scope: 'records', q: '尚未留资客户' });
     assert.deepEqual(blankStock.items[0].stocks, []);
     assert.equal((await request({ scope: 'records', q: '唯一本地股票' }, investorToken)).status, 403);
+  });
+
+  await t.test('客户记录按当前券商的归属销售检索，自然流入没有渠道销售', async () => {
+    const q = '检索测试销售';
+    const result = await search({ scope: 'records', q });
+    const rows = [...result.items];
+    for (let offset = result.limit; offset < result.total; offset += result.limit) {
+      rows.push(...(await search({ scope: 'records', q, offset })).items);
+    }
+    assert.ok(rows.some(row => row.id === 'same-a'));
+    assert.ok(rows.every(row => row.brokerId === 'broker-a' && row.ownerSalesName === q));
+    const natural = await search({ scope: 'records', q: '19900009003' });
+    assert.equal(natural.items[0].ownerSalesName, null);
   });
 
   await t.test('客户记录的空搜索分页列出原范围客户，股票多条不会扩大总人数', async () => {

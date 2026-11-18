@@ -38,8 +38,12 @@ test('小程序真实页面逻辑完成恢复码找回、后台重置后强制�
   assert.ok(app.globalData.token);
   assert.equal(destination, '/pages/home/index');
   const pageModule = { exports: {} };
+  const boardModule = { exports: {} };
+  vm.runInNewContext(readFileSync(new URL('../miniprogram/sales-board.js', import.meta.url), 'utf8'), {
+    getApp: () => app, require: () => clientModule.exports, module: boardModule,
+  });
   vm.runInNewContext(readFileSync(new URL('../miniprogram/page.js', import.meta.url), 'utf8'), {
-    wx, getApp: () => app, require: () => clientModule.exports, module: pageModule,
+    wx, getApp: () => app, require: name => name === './sales-board' ? boardModule.exports : clientModule.exports, module: pageModule,
   });
   const mine = pageModule.exports(false);
   mine.setData = updates => Object.assign(mine.data, updates);

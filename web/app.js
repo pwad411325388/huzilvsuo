@@ -25,7 +25,7 @@ if (adminPage) {
   portalLink.textContent = '业务端';
   document.title = '运营后台 · 沪紫律师事务所';
 }
-const adminTabs = [[6, '数据总览'], [7, '销售看板'], [8, '渠道管理'], [2, '客户案件'], [3, '数据报表'], [5, '公司与派单'], [1, '客户签约'], [0, '账号管理'], [4, '审计与联调']];
+const adminTabs = [[6, '数据总览'], [7, '销售看板'], [8, '渠道管理'], [2, '客户案件'], [9, '律所登记台账'], [3, '数据报表'], [5, '公司与派单'], [1, '客户签约'], [0, '账号管理'], [4, '审计与联调']];
 const timeZone = 'Asia/Shanghai';
 const dayOf = date => new Intl.DateTimeFormat('sv-SE', { timeZone }).format(new Date(date));
 const safe = value => String(value ?? '').replace(/[&<>"']/g, char => ({
@@ -34,7 +34,51 @@ const safe = value => String(value ?? '').replace(/[&<>"']/g, char => ({
 const state = { ready: false, registering: false, authBusy: false, editingName: false, revision: 0,
   view: null, page: 'home', metric: 0, lead: '', ledger: '洽谈中', adminTab: 6, filters: {},
   recovering: false, security: false, recovery: null, accountFilters: {}, accountAction: null,
-  assignmentFilters: {}, caseFilters: {}, salesFilters: {}, channelFilters: {}, editCompany: '', editAssignment: '', editChannel: '', followFilter: '待跟进', clientRecords: {}, brokerFilters: {}, overviewDetail: null };
+  assignmentFilters: {}, caseFilters: {}, salesFilters: {}, channelFilters: {}, editCompany: '', editAssignment: '', editChannel: '', followFilter: '待跟进', clientRecords: {}, brokerFilters: {}, overviewDetail: null,
+  salesBoard: salesBoardState() };
+
+function salesBoardState(owner = '') {
+  return { owner, period: 'all', from: '', to: '', rangeFrom: '', rangeTo: '', metric: 'channels', offset: 0, data: null, error: '', dateError: '', loading: false, sequence: 0 };
+}
+let salesBoardAbort;
+function cancelSalesBoard() {
+  salesBoardAbort?.abort();
+  state.salesBoard.sequence += 1;
+  state.salesBoard.loading = false;
+  state.salesBoard.data = null;
+}
+
+async function loadSalesBoard(offset = state.salesBoard.offset) {
+  const board = state.salesBoard;
+  if (state.page !== 'mine' || state.view?.actor.role !== 'sales') return;
+  salesBoardAbort?.abort();
+  salesBoardAbort = new AbortController();
+  const sequence = ++board.sequence;
+  const revision = state.revision;
+  const current = () => revision === state.revision && board === state.salesBoard && sequence === board.sequence
+    && state.page === 'mine' && state.view?.actor.role === 'sales' && state.view.actor.id === board.owner;
+  board.loading = true; board.error = ''; board.data = null;
+  render();
+  const params = { period: board.period, metric: board.metric, offset };
+  if (board.period === 'custom') Object.assign(params, { from: board.rangeFrom, to: board.rangeTo });
+  try {
+    const result = await request('/sales/board?' + new URLSearchParams(params), undefined, salesBoardAbort.signal);
+    if (!current()) return;
+    if (!result || !Array.isArray(result.metrics) || !Array.isArray(result.items)
+        || !result.metrics.some(item => item.key === result.selected)
+        || !Number.isInteger(result.total) || result.total < 0 || !Number.isInteger(result.offset)
+        || result.offset < 0 || !Number.isInteger(result.limit) || result.limit < 1) {
+      throw new Error('统计数据暂未完整返回，请重试');
+    }
+    board.data = result; board.offset = result.offset; board.metric = result.selected;
+  } catch (error) {
+    if (!current() || error.name === 'AbortError') return;
+    board.error = error.message || '暂时无法加载统计';
+    if (error.status === 401) { handleError(error); return; }
+  } finally {
+    if (current()) { board.loading = false; render(); }
+  }
+}
 
 function message(text, error = false) {
   feedback.textContent = text;
@@ -61,6 +105,27 @@ const clientSearch = installClientSearch({
   onRecordsState: filters => { state.clientRecords = filters; },
 });
 
+async function showRegistry(container, admin) {
+  if (!container || container.dataset.loaded) return;
+  container.dataset.loaded = 'true';
+  try {
+    const { renderRegistryPanel, mountRegistryPanel } = await import('./registry-panel.js');
+    if (!container.isConnected) return;
+    container.innerHTML = renderRegistryPanel({ admin });
+    mountRegistryPanel(container, { request, onError: handleError, admin, initialPasswordHint: initialPasswordHint() });
+  } catch (error) {
+    if (container.isConnected) {
+      delete container.dataset.loaded;
+      container.textContent = '登记台账暂未加载，请刷新页面重试。';
+    }
+  }
+}
+
+function initialPasswordHint() {
+  const password = state.view?.initialBusinessPassword;
+  return password ? `默认初始密码为 ${password}，首次登录须设置个人密码。` : '首次登录须设置个人密码。';
+}
+
 async function refresh(revision = state.revision) {
   const snapshot = await request('/view');
   if (revision !== state.revision) return;
@@ -70,6 +135,8 @@ async function refresh(revision = state.revision) {
 }
 
 function resetView() {
+  cancelSalesBoard();
+  state.salesBoard = salesBoardState();
   state.revision += 1;
   state.ready = true;
   state.registering = false;
@@ -167,7 +234,7 @@ function recoveryResult(scope = 'self') {
 }
 
 function securityPanel(required = false) {
-  return panel(required ? '设置个人密码' : '账号安全', `<p>${required ? '后台已重置密码。请用管理员提供的临时密码验证，并设置自己的新密码后继续使用。' : '修改密码后，所有设备需要重新登录，已保存的恢复码会失效。'}</p>
+  return panel(required ? '设置个人密码' : '账号安全', `<p>${required ? '请输入管理员提供的临时密码，再设置自己的登录密码。' : '修改密码后，所有设备需要重新登录，已保存的恢复码会失效。'}</p>
     <form data-form="change-password" class="form-grid">
     ${field(required ? '临时密码' : '当前密码', '<input name="currentPassword" type="password" maxlength="128" autocomplete="current-password" required>')}
     ${newPasswordFields()}<button class="primary">保存新密码</button></form>
@@ -223,7 +290,8 @@ function accountManagement() {
 }
 
 function recordCard(record) {
-  const details = [record.subtitle, record.openedOn && `登记日期 ${record.openedOn}`, record.signedOn && `签约日期 ${record.signedOn}`].filter(Boolean);
+  const details = [record.subtitle, record.registeredOn !== undefined && `登记日期 ${record.registeredOn || '待核对'}`,
+    record.openedOn && `${record.openedOnLabel || '登记日期'} ${record.openedOn}`, record.signedOn && `签约日期 ${record.signedOn}`].filter(Boolean);
   return `<article class="record"><span class="avatar" aria-hidden="true">${safe(initial(record.title))}</span><div class="record-main">
     <div class="record-title"><h3>${safe(record.title)}</h3>${tag(record.status)}</div>
     <p>${details.map(safe).join(' · ')}</p>${record.phone ? `<p>手机 ${safe(record.phone)}</p>` : ''}</div></article>`;
@@ -237,6 +305,40 @@ function renderBoard(metrics) {
       `class="chip ${item === selected ? 'selected' : ''}" aria-pressed="${item === selected}"`)).join('')}</div>
     <div class="list-heading"><h2>${safe(selected.label)}</h2><span>${selected.value} ${safe(selected.unit)}</span></div>
     <div class="records">${selected.records.map(record => recordCard(record)).join('') || empty()}</div></section>`;
+}
+
+function renderSalesBoard() {
+  const board = state.salesBoard;
+  const data = board.data;
+  const selected = data?.metrics.find(item => item.key === data.selected);
+  const controls = `<div class="filters">${[['all', '全部'], ['month', '本月']].map(([period, label]) =>
+    button(label, 'sales-board-period', period, `class="chip ${board.period === period ? 'selected' : ''}" aria-pressed="${board.period === period}"`)).join('')}</div>
+    <form data-form="sales-board-dates" class="inline-form">
+      ${field('开始日期', `<input type="date" name="from" max="${safe(state.view.today)}" value="${safe(board.from)}" required>`)}
+      ${field('结束日期', `<input type="date" name="to" max="${safe(state.view.today)}" value="${safe(board.to)}" required>`)}
+      <button class="${board.period === 'custom' ? 'primary' : 'secondary'}">按日期查看</button></form>
+    ${board.dateError ? `<p role="alert" class="sales-board-error">${safe(board.dateError)}</p>` : ''}`;
+  let content = empty('正在加载统计与明细…');
+  if (board.error) content = `<p role="alert" class="sales-board-error">${safe(board.error)}</p>${button('重新加载', 'sales-board-retry', '', 'class="secondary"')}`;
+  else if (data) {
+    const range = data.period === 'all' ? '累计全部数据（含历史同步）' : `${data.from} 至 ${data.to}`;
+    const page = Math.floor(data.offset / data.limit) + 1;
+    const pages = Math.max(1, Math.ceil(data.total / data.limit));
+    content = `<p class="muted">${safe(range)}</p><div class="metrics">${data.metrics.map(item =>
+      `<button type="button" class="metric ${item.key === data.selected ? 'selected' : ''}" data-action="sales-board-metric" data-value="${safe(item.key)}" aria-pressed="${item.key === data.selected}">
+        <span>${safe(item.label)}</span><strong>${safe(item.value)}<small>${safe(item.unit)}</small></strong></button>`).join('')}</div>
+      ${(data.notes || []).map(note => `<p class="muted">${safe(note)}</p>`).join('')}
+      <div class="list-heading"><h2>${safe(selected.label)}</h2><span>${safe(data.total)} ${safe(selected.unit)}</span></div>
+      ${selected.dateLabel ? `<p class="muted">按${safe(selected.dateLabel)}筛选</p>` : ''}
+      ${data.period !== 'all' && selected.unknownDateCount ? `<p class="muted">另有 ${safe(selected.unknownDateCount)} ${safe(selected.unit)}未明确日期，可在全部数据中查看。</p>` : ''}
+      <div class="records">${data.items.map(item => recordCard({ ...item, openedOnLabel: '案件登记日期' })).join('') || empty()}</div>
+      <nav class="list-pagination" aria-label="销售统计明细分页">
+        ${button('上一页', 'sales-board-page', Math.max(0, data.offset - data.limit), `class="secondary" ${data.offset === 0 ? 'disabled' : ''}`)}
+        <span>${page} / ${pages} 页 · 每页 ${data.limit} 条</span>
+        ${button('下一页', 'sales-board-page', data.offset + data.limit, `class="secondary" ${data.offset + data.limit >= data.total ? 'disabled' : ''}`)}
+      </nav>`;
+  }
+  return `<section class="dashboard sales-board" aria-busy="${board.loading}"><h2>我的数据</h2>${controls}<div class="sales-board-content">${content}</div></section>`;
 }
 
 function investor() {
@@ -266,9 +368,16 @@ function investor() {
 }
 
 function sales() {
-  if (state.page === 'mine') return `${hero('销售端', '合作渠道统计', '查看所负责券商带来的客户和案件。')}${renderBoard(state.view.metrics)}`;
+  if (state.page === 'mine') return `${hero('销售端', '销售数据统计', '包含名下客户、股票记录及已关联的历史登记。')}${renderSalesBoard()}`;
+  if (state.page === 'registry') return button('返回销售工作台', 'page', 'home', 'class="secondary"')
+    + '<div data-registry-host>正在打开登记台账…</div>';
   const records = state.view.assignedLeads.filter(lead => !state.followFilter || lead.status === state.followFilter);
-  return `${hero('销售端', '销售工作台', '按留资对应公司派单，跟进分配给自己的具体留资。')}
+  const preview = (state.view.registryPreview || []).map(row => `<article class="record"><div class="record-main">
+    <strong>${safe(row.customer)}</strong><p>${safe(row.stockName)} ${safe(row.stockCode)}</p></div></article>`).join('');
+  return `${hero('销售端', '销售工作台', '跟进你的券商推荐的留资，以及分派给你的其他留资。')}
+    ${panel('我的登记客户', `<p class="muted">${safe(state.view.registryCount || 0)} 条登记</p>
+      <div class="records">${preview || empty('暂无已关联的登记记录')}</div>
+      ${button('查看全部登记记录', 'page', 'registry', 'class="secondary"')}`)}
     ${panel('分派给我的留资', `<div class="filters">${[['待跟进', '待跟进'], ['已跟进', '已跟进'], ['', '全部']].map(([value, label]) =>
       button(label, 'follow-filter', value, `class="chip ${state.followFilter === value ? 'selected' : ''}"`)).join('')}</div><p>共 ${records.length} 条</p>
       <div class="records">${records.map(lead => `<article class="record"><div class="record-main"><div class="record-title"><h3>${safe(lead.name)}</h3>${tag(lead.status)}</div>
@@ -307,12 +416,13 @@ function adminContent() {
   const statusOptions = caseStatuses.map(status => [status, status]);
   const header = '';
   const operations = () => operationsPage(state.view, state, { safe, button, field, select, panel, empty, tag });
+  if (state.adminTab === 9) return '<div data-registry-host>正在打开登记台账…</div>';
   if ([5, 6, 7, 8].includes(state.adminTab)) return operations();
   if (state.adminTab === 0) return header + accountManagement() + `<div class="admin-grid">${panel('销售账号开通', `<form data-form="sales-account" class="form-grid">
     ${field('销售业务记录', select('salesId', sales.filter(item => !item.username).map(item => [item.id, item.name]), '', '新增销售'))}
     ${field('销售姓名', '<input name="name" maxlength="40" required>')}
     ${field('专用账号', '<input name="username" minlength="3" maxlength="40" autocomplete="off" required>')}
-    ${field('初始密码', '<input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required>')}
+    <p class="muted">${safe(initialPasswordHint())}</p>
     <button class="primary">开通销售账号</button></form>`)}${panel('销售账号', sales.map(item => `<article class="admin-record">
     <div class="list-heading"><h3>${safe(item.name)}</h3>${tag(item.accountStatus === 'closed' ? '已注销' : item.username ? '已开户' : '待开户')}</div>
     ${item.username ? `<p>账号 ${safe(item.username)}</p>` : ''}</article>`).join('') || empty('暂无销售账号'))}</div>` + renderBrokerAccounts(state.brokerFilters);
@@ -368,6 +478,10 @@ function admin() {
 function render() {
   const actor = state.view?.actor;
   const role = actor?.role;
+  if (role === 'sales' && state.salesBoard.owner !== actor.id) {
+    cancelSalesBoard();
+    state.salesBoard = salesBoardState(actor.id);
+  }
   accountBar.hidden = role !== 'admin';
   accountBar.innerHTML = role === 'admin' ? `<strong>${safe(actor.name)} · ${safe(actor.account)}</strong><div>${button('账号安全', 'security', '', 'class="quiet"')}${button('退出登录', 'sign-out', '', 'class="quiet"')}</div>` : '';
   app.classList.toggle('admin', role === 'admin');
@@ -377,15 +491,23 @@ function render() {
   if (role === 'admin') {
     app.innerHTML = admin();
     clientSearch.mount(app);
-    mountBrokerAccounts(app, { request, onError: handleError,
+    if (state.adminTab === 9) void showRegistry(app.querySelector('[data-registry-host]'), true);
+    mountBrokerAccounts(app, { request, onError: handleError, initialPasswordHint: initialPasswordHint(),
       onState: filters => { state.brokerFilters = filters; },
       onChanged: () => refresh(), onNotice: message });
     return;
   }
   const content = role === 'investor' ? investor() : role === 'sales' ? sales() : broker();
-  app.innerHTML = `<div class="mobile-content">${state.page === 'mine' ? accountSummary(actor) : ''}${content}</div><nav class="bottom-nav" aria-label="底部导航">
+  const registry = state.page === 'mine' && ['sales','investor'].includes(role)
+    ? '<details class="panel" data-my-registry><summary>律所登记记录</summary><div data-registry-host></div></details>' : '';
+  app.innerHTML = `<div class="mobile-content">${state.page === 'mine' ? accountSummary(actor) : ''}${registry}${content}</div><nav class="bottom-nav" aria-label="底部导航">
     ${[['home', '首页'], ['mine', '我的']].map(([page, name]) => button(name, 'page', page,
-    `aria-current="${state.page === page ? 'page' : 'false'}"`)).join('')}</nav>`;
+    `aria-current="${state.page === page || state.page === 'registry' && page === 'home' ? 'page' : 'false'}"`)).join('')}</nav>`;
+  if (role === 'sales' && state.page === 'registry') void showRegistry(app.querySelector('[data-registry-host]'), false);
+  app.querySelector('[data-my-registry]')?.addEventListener('toggle', event => {
+    if (event.currentTarget.open) void showRegistry(event.currentTarget.querySelector('[data-registry-host]'), false);
+  });
+  if (role === 'sales' && state.page === 'mine' && !state.salesBoard.data && !state.salesBoard.loading && !state.salesBoard.error) void loadSalesBoard();
 }
 
 async function copyLink(path) {
@@ -400,6 +522,16 @@ document.addEventListener('click', async event => {
   const { action, value } = target.dataset;
   try {
     switch (action) {
+      case 'sales-board-period':
+        if (!['all', 'month'].includes(value)) break;
+        Object.assign(state.salesBoard, { period: value, offset: 0, dateError: '' });
+        await loadSalesBoard(0); break;
+      case 'sales-board-metric':
+        if (!['channels', 'customers', 'effective', 'closed'].includes(value)) break;
+        Object.assign(state.salesBoard, { metric: value, offset: 0 });
+        await loadSalesBoard(0); break;
+      case 'sales-board-page': await loadSalesBoard(Number(value)); break;
+      case 'sales-board-retry': await loadSalesBoard(); break;
       case 'overview-detail':
         state.overviewDetail = { index: Number(value), q: '', offset: 0 }; render();
         app.querySelector('[data-action="overview-back"]')?.focus(); break;
@@ -428,7 +560,7 @@ document.addEventListener('click', async event => {
       case 'toggle-auth': if (!state.authBusy) { state.registering = !state.registering; message(''); render(); } break;
       case 'edit-name': state.editingName = !state.editingName; render(); break;
       case 'sign-out': await request('/auth/logout', {}); resetView(); message('已退出登录'); break;
-      case 'page': state.page = value; state.metric = 0; state.lead = ''; state.editingName = false; state.security = false; state.recovery = null; message(''); await refresh(); break;
+      case 'page': cancelSalesBoard(); state.page = value; state.metric = 0; state.lead = ''; state.editingName = false; state.security = false; state.recovery = null; message(''); await refresh(); break;
       case 'metric': state.metric = Number(value); render(); app.querySelector('.filters .selected')?.focus(); break;
       case 'ledger': state.ledger = value; render(); app.querySelector('.filters .selected')?.focus(); break;
       case 'lead': state.lead = value; await refresh(); break;
@@ -440,7 +572,7 @@ document.addEventListener('click', async event => {
 
 const forms = {
   company: ['/companies', '已保存公司配置，仅影响后续新留资'], assignment: ['/assignments', '已保存留资分派'],
-  'channel-owner': ['/channels/owner', '已更新渠道合作负责人，留资经办人保持不变'],
+  'channel-owner': ['/channels/owner', '已更新渠道合作负责人'],
   cooperation: ['/cooperations', '已保存合作签约与销售绑定'], account: ['/accounts', '券商账号已开通'],
   'sales-account': ['/accounts/sales', '销售账号已开通'], name: ['/profile/name', '已保存显示名称'],
   lead: ['/leads', '已提交，可在「我的」查看留资记录'],
@@ -450,7 +582,10 @@ const forms = {
 
 document.addEventListener('change', event => {
   const form = event.target.closest('form');
-  if (form?.dataset.form === 'assignment' && event.target.name === 'companyId') {
+  if (form?.dataset.form === 'sales-board-dates' && ['from', 'to'].includes(event.target.name)) {
+    state.salesBoard[event.target.name] = event.target.value;
+  }
+  if (form?.dataset.form === 'assignment' && form.dataset.source === 'direct' && event.target.name === 'companyId') {
     const company = state.view.companies.find(item => item.id === event.target.value);
     form.elements.salesId.value = company?.salesId || '';
   }
@@ -472,6 +607,17 @@ document.addEventListener('submit', async event => {
   if (submit) submit.disabled = true;
   try {
     const queries = { 'assignment-query': 'assignmentFilters', 'case-query': 'caseFilters', 'sales-query': 'salesFilters', 'channel-query': 'channelFilters' };
+    if (kind === 'sales-board-dates') {
+      const board = state.salesBoard;
+      board.from = input.from; board.to = input.to;
+      if (!board.from || !board.to) { board.dateError = '请选择起止日期'; render(); return; }
+      const validDate = value => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+      if (!validDate(board.from) || !validDate(board.to)) { board.dateError = '请选择有效的日期'; render(); return; }
+      if (board.from > board.to) { board.dateError = '开始日期须早于或等于结束日期'; render(); return; }
+      if (state.view.today && board.to > state.view.today) { board.dateError = '日期不能晚于今天'; render(); return; }
+      Object.assign(board, { period: 'custom', rangeFrom: board.from, rangeTo: board.to, offset: 0, dateError: '' });
+      await loadSalesBoard(0); return;
+    }
     if (kind === 'overview-detail-search' && state.overviewDetail) {
       state.overviewDetail.q = String(input.q || '').trim().slice(0, 100);
       state.overviewDetail.offset = 0; render(); return;
@@ -543,7 +689,7 @@ document.addEventListener('submit', async event => {
     if (kind === 'channel-owner') state.editChannel = '';
     await refresh(revision);
     if (revision !== state.revision) return;
-    message(notice);
+    message(kind === 'sales-account' ? `${notice}。${initialPasswordHint()}` : notice);
   } catch (error) { handleError(error, ['auth', 'recover', 'change-password', 'recovery-code', 'manage-account'].includes(kind)); }
   finally { if (kind === 'auth') state.authBusy = false; if (submit) submit.disabled = false; }
 });

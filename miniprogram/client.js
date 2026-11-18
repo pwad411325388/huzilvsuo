@@ -30,6 +30,12 @@ function showLogin() {
   wx.reLaunch({ url: '/pages/login/index' });
 }
 
+function openProgress(event) {
+  const { kind, id } = event.currentTarget.dataset;
+  if (!['lead', 'case', 'registry'].includes(kind) || !id) return;
+  wx.navigateTo({ url: '/pages/progress/index?kind=' + kind + '&id=' + encodeURIComponent(id) });
+}
+
 const referralKey = 'huzi-promo-session';
 const referralToken = () => wx.getStorageSync(referralKey) || '';
 
@@ -52,4 +58,4 @@ async function capturePromos() {
   return first;
 }
 
-module.exports = { request, saveToken, showLogin, capturePromos, referralToken, clearReferral };
+module.exports = { request, saveToken, showLogin, capturePromos, referralToken, clearReferral, openProgress };

@@ -36,6 +36,7 @@
         <button class="secondary" bindtap="logout" disabled="{{busy}}">退出登录</button></view>
       <button wx:if="{{view.actor.role === 'investor'}}" class="secondary edit-name" bindtap="toggleName" disabled="{{busy}}">{{editingName ? '取消修改' : '修改显示名称'}}</button>
       <button class="secondary edit-name" bindtap="toggleSecurity" disabled="{{busy}}">{{security ? '关闭账号安全' : '账号安全'}}</button>
+      <navigator wx:if="{{view.actor.role === 'sales' || view.actor.role === 'investor'}}" class="secondary edit-name" url="/pages/registry/index">律所登记记录</navigator>
       <form wx:if="{{editingName}}" bindsubmit="submit" data-type="name">
         <label>显示名称<input name="name" value="{{view.actor.name}}" maxlength="40" /></label>
         <button class="primary" form-type="submit" disabled="{{busy}}">保存名称</button>
@@ -77,13 +78,6 @@
           <button class="primary" form-type="submit" disabled="{{busy}}">提交留资</button>
         </form>
       </block>
-      <block wx:elif="{{selectedLead}}">
-        <view class="panel"><button class="secondary" bindtap="closeLead">返回留资记录</button>
-          <view class="heading subheading">{{selectedLead.stockName}} · {{selectedLead.stockCode}}</view>
-          <block wx:for="{{selectedLead.cases}}" wx:key="id"><template is="record" data="{{record: item}}" /></block>
-          <view wx:if="{{!selectedLead.cases.length}}" class="record"><view class="line"><text>当前状态</text><text class="tag">留资</text></view><view class="muted">已收到资料，尚未建立案件。</view></view>
-        </view>
-      </block>
       <block wx:else>
         <view class="hero"><text>股民端</text><view class="title">我的留资记录</view><view>查看已提交的咨询与当前案件状态。</view></view>
         <view wx:if="{{view.contact}}" class="panel profile-contact">
@@ -91,16 +85,25 @@
           <view><view class="muted">留资手机号</view><view class="strong">{{view.contact.phone}}</view></view>
         </view>
         <view class="panel"><view class="heading">留资记录</view>
-          <button class="record lead-button" wx:for="{{view.leads}}" wx:key="id" bindtap="showLead" data-id="{{item.id}}">
+          <button class="record lead-button" wx:for="{{view.leads}}" wx:key="id" bindtap="openProgress" data-kind="lead" data-id="{{item.id}}">
             <view class="line"><text class="strong">{{item.stockName}} · {{item.stockCode}}</text><text class="tag">{{item.cases.length ? item.cases.length + ' 件案件' : '留资'}}</text></view>
-            <view class="muted">{{item.createdOn}}</view></button>
+            <view class="line"><text class="muted">{{item.createdOn}}</text><text class="progress-link">查看进度 ›</text></view></button>
           <view wx:if="{{!view.leads.length}}" class="empty">暂无留资记录</view></view>
         <view class="panel"><view class="heading">转介绍</view><button class="secondary" open-type="share">分享咨询入口</button></view>
       </block>
     </block>
     <block wx:elif="{{view.actor.role === 'sales'}}">
       <block wx:if="{{isHome}}">
-        <view class="hero"><text>销售端</text><view class="title">销售工作台</view><view>按公司派单，跟进分配给自己的具体留资。</view></view>
+        <view class="hero"><text>销售端</text><view class="title">销售工作台</view><view>跟进你的券商推荐的留资，以及分派给你的其他留资。</view></view>
+        <view class="panel">
+          <view class="line"><view class="heading">我的登记客户</view><text class="muted">{{view.registryCount || 0}} 条登记</text></view>
+          <button class="record lead-button" wx:for="{{view.registryPreview}}" wx:key="rowKey" bindtap="openProgress" data-kind="registry" data-id="{{item.rowKey}}">
+            <view class="line"><text class="strong">{{item.customer}}</text><text class="progress-link">查看进度 ›</text></view>
+            <view class="muted">{{item.stockName}} {{item.stockCode}}</view>
+          </button>
+          <view wx:if="{{!view.registryCount}}" class="empty">暂无已关联的登记记录</view>
+          <navigator class="secondary edit-name" url="/pages/registry/index">查看全部登记记录</navigator>
+        </view>
         <view class="panel"><view class="heading">分派给我的留资</view><view class="chips">
           <button class="chip {{followFilter === '待跟进' ? 'selected' : ''}}" bindtap="pickFollow" data-status="待跟进">待跟进</button>
           <button class="chip {{followFilter === '已跟进' ? 'selected' : ''}}" bindtap="pickFollow" data-status="已跟进">已跟进</button>
@@ -111,7 +114,8 @@
             <view class="muted">{{item.number}} · {{item.createdOn}}</view>
             <view>{{item.stockName}} · {{item.stockCode}}</view><view class="muted">核对公司 {{item.companyName}}</view>
             <view class="muted">手机 {{item.phone}} · 渠道 {{item.brokerName || '自然流入'}}</view>
-            <view class="muted" wx:for="{{item.cases}}" wx:for-item="record" wx:key="id">案件 {{record.title}} · {{record.status}}</view>
+            <button class="progress-button" bindtap="openProgress" data-kind="lead" data-id="{{item.id}}">查看留资进度 ›</button>
+            <button class="progress-button" wx:for="{{item.cases}}" wx:for-item="record" wx:key="id" bindtap="openProgress" data-kind="case" data-id="{{record.id}}">案件 {{record.title}} · {{record.status}} ›</button>
             <view class="muted" wx:for="{{item.followups}}" wx:for-item="note" wx:key="id">{{note.salesName}} · {{note.note}}</view>
             <form bindsubmit="submit" data-type="followup" data-id="{{item.id}}" data-version="{{item.version}}" class="follow">
               <input name="note" placeholder="填写本条留资的跟进记录" maxlength="500" />
@@ -124,8 +128,52 @@
           <button class="primary" form-type="submit" disabled="{{busy}}">保存签约绑定</button></form>
       </block>
       <block wx:else>
-        <view class="hero"><text>销售端</text><view class="title">合作渠道统计</view><view>查看所负责券商带来的客户和案件。</view></view>
-        <template is="board" data="{{metrics: view.metrics, metric: metric, sales: true, busy: busy}}" />
+        <view class="hero"><text>销售端</text><view class="title">销售数据统计</view><view>包含名下客户、股票记录及已关联的历史登记。</view></view>
+        <view class="panel sales-board">
+          <view class="heading">我的数据</view>
+          <view class="chips board-periods">
+            <button class="chip {{boardPeriod === 'all' ? 'selected' : ''}}" bindtap="pickBoardPeriod" data-period="all">全部</button>
+            <button class="chip {{boardPeriod === 'month' ? 'selected' : ''}}" bindtap="pickBoardPeriod" data-period="month">本月</button>
+          </view>
+          <view class="board-dates">
+            <view><view class="label">开始日期</view><picker mode="date" value="{{boardFrom}}" end="{{view.today}}" bindchange="pickBoardDate" data-field="from"><view class="input">{{boardFrom || '选择开始日期'}}</view></picker></view>
+            <view><view class="label">结束日期</view><picker mode="date" value="{{boardTo}}" end="{{view.today}}" bindchange="pickBoardDate" data-field="to"><view class="input">{{boardTo || '选择结束日期'}}</view></picker></view>
+          </view>
+          <button class="secondary {{boardPeriod === 'custom' ? 'selected' : ''}}" bindtap="applyBoardDates">按日期查看</button>
+          <view wx:if="{{boardDateError}}" class="field-error board-note">{{boardDateError}}</view>
+          <view wx:if="{{boardLoading}}" class="empty board-note">正在加载统计与明细…</view>
+          <view wx:elif="{{boardError}}" class="board-note">
+            <view class="field-error">{{boardError}}</view><button class="secondary" bindtap="retryBoard">重新加载</button>
+          </view>
+          <block wx:elif="{{salesBoard}}">
+            <view class="muted board-note">{{salesBoard.period === 'all' ? '累计全部数据（含历史同步）' : salesBoard.from + ' 至 ' + salesBoard.to}}</view>
+            <view class="metrics">
+              <button class="metric board-card {{item.key === boardMetric ? 'selected' : ''}}" wx:for="{{salesBoard.metrics}}" wx:key="key" bindtap="pickBoardMetric" data-key="{{item.key}}">
+                <view class="muted">{{item.label}}</view><view class="count">{{item.value}} <text>{{item.unit}}</text></view>
+              </button>
+            </view>
+            <view class="muted board-note" wx:for="{{salesBoard.notes}}" wx:key="*this">{{item}}</view>
+            <view class="line subheading"><text>{{boardSelected.label}}</text><text class="muted">{{salesBoard.total}} {{boardSelected.unit}}</text></view>
+            <view wx:if="{{boardSelected.dateLabel}}" class="muted">按{{boardSelected.dateLabel}}筛选</view>
+            <view wx:if="{{salesBoard.period !== 'all' && boardSelected.unknownDateCount}}" class="muted board-note">另有 {{boardSelected.unknownDateCount}} {{boardSelected.unit}}未明确日期，可在全部数据中查看。</view>
+            <view class="record" wx:for="{{salesBoard.items}}" wx:key="id">
+              <view class="line"><text class="strong">{{item.title}}</text><text wx:if="{{item.status}}" class="tag">{{item.status}}</text></view>
+              <view wx:if="{{item.subtitle}}" class="muted">{{item.subtitle}}</view>
+              <view wx:if="{{item.phone}}" class="muted">手机 {{item.phone}}</view>
+              <view class="muted">登记日期 {{item.registeredOn || '待核对'}}</view>
+              <view wx:if="{{item.openedOn}}" class="muted">案件登记日期 {{item.openedOn}}</view>
+              <view wx:if="{{item.signedOn}}" class="muted">签约日期 {{item.signedOn}}</view>
+              <button wx:if="{{item.kind && item.progressId}}" class="progress-button" bindtap="openProgress" data-kind="{{item.kind}}" data-id="{{item.progressId}}">查看进度 ›</button>
+            </view>
+            <view wx:if="{{!salesBoard.total}}" class="empty">暂无符合条件的记录</view>
+            <view class="board-pager">
+              <button class="secondary" bindtap="boardPrevious" disabled="{{salesBoard.offset === 0}}">上一页</button>
+              <text class="muted">{{boardPage}} / {{boardPages}} 页</text>
+              <button class="secondary" bindtap="boardNext" disabled="{{salesBoard.offset + salesBoard.limit >= salesBoard.total}}">下一页</button>
+            </view>
+            <view class="muted board-page-size">每页 {{salesBoard.limit}} 条</view>
+          </block>
+        </view>
       </block>
     </block>
     <block wx:else>

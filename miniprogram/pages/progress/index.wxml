@@ -1,0 +1,53 @@
+<view class="screen">
+  <view wx:if="{{loading}}" class="notice">正在读取案件进度…</view>
+  <view wx:elif="{{notice}}" class="panel">
+    <view>{{notice}}</view>
+    <button wx:if="{{retryable}}" class="secondary edit-name" bindtap="retry">重新加载</button>
+  </view>
+  <block wx:elif="{{detail}}">
+    <view class="hero">
+      <text>{{detail.kind === 'registry' ? '律所登记记录' : detail.kind === 'lead' ? '留资记录' : '案件'}}</text>
+      <view class="title">{{detail.title}}</view>
+      <view wx:if="{{detail.customer}}">股民 {{detail.customer}}</view>
+      <view wx:if="{{detail.stockName && detail.stockName !== detail.title}}">股票 {{detail.stockName}} {{detail.stockCode}}</view>
+      <view wx:elif="{{detail.stockCode && detail.stockCode !== detail.title}}">股票代码 {{detail.stockCode}}</view>
+      <view wx:if="{{detail.registeredOn}}">材料登记 {{detail.registeredOn}}</view>
+      <view wx:if="{{detail.createdOn}}">留资日期 {{detail.createdOn}}</view>
+      <view wx:if="{{detail.openedOn}}">案件登记 {{detail.openedOn}}</view>
+      <view wx:if="{{detail.filedOn}}">立案日期 {{detail.filedOn}}</view>
+    </view>
+    <view class="panel">
+      <view class="progress-heading">
+        <text class="heading">当前进度</text><text wx:if="{{detail.current}}" class="progress-stage">{{detail.current.stageLabel}}</text>
+      </view>
+      <block wx:if="{{detail.current}}">
+        <view class="step-list">
+          <view wx:for="{{detail.steps}}" wx:key="node" class="step-row step-{{item.status}}">
+            <view wx:if="{{index + 1 < detail.steps.length}}" class="step-connector" aria-hidden="true"></view>
+            <view class="step-mark" aria-hidden="true"><text wx:if="{{item.status === 'completed'}}">✓</text></view>
+            <view class="step-content">
+              <view class="step-line">
+                <text class="step-label" aria-label="{{item.status === 'reference' ? item.label + '，参考节点' : item.label}}">{{item.label}}</text>
+                <text wx:if="{{item.status === 'current'}}" class="step-badge">当前</text>
+                <text wx:elif="{{item.status === 'completed'}}" class="step-badge">已完成</text>
+              </view>
+              <view wx:if="{{detail.contractStep === item.node}}" class="contract">合同号：<text selectable="true">{{detail.contractNumber}}</text></view>
+            </view>
+          </view>
+        </view>
+        <view wx:if="{{detail.hasReference}}" class="step-key muted">空心圆表示本阶段的参考节点</view>
+      </block>
+      <view wx:if="{{detail.sourceStatus && (!detail.current || (detail.sourceStatus !== detail.current.label && detail.sourceStatus !== detail.current.stageLabel))}}" class="muted">系统记录状态 {{detail.sourceStatus}}</view>
+      <view wx:if="{{!detail.current}}" class="empty">{{detail.sourceStatus ? '具体进度节点待同步' : '此记录的案件进度尚未同步'}}</view>
+      <view wx:if="{{detail.contractNumber && !detail.contractStep}}" class="contract">合同号：<text selectable="true">{{detail.contractNumber}}</text></view>
+    </view>
+    <view wx:if="{{detail.relatedCases.length}}" class="panel">
+      <view class="heading">本条留资的案件</view>
+      <button wx:for="{{detail.relatedCases}}" wx:key="id" class="record lead-button" bindtap="openProgress" data-kind="case" data-id="{{item.id}}">
+        <view class="line"><text>{{item.title}}</text><text class="progress-link">查看进度 ›</text></view>
+        <view wx:if="{{item.status}}" class="muted">{{item.status}}</view>
+        <view wx:if="{{item.openedOn}}" class="muted">登记日期 {{item.openedOn}}</view>
+      </button>
+    </view>
+  </block>
+</view>

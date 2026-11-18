@@ -7,6 +7,7 @@ import { createHash, scryptSync } from 'node:crypto';
 import test from 'node:test';
 import { createAppServer } from '../server.mjs';
 import { createStore, today } from '../store.mjs';
+import { activateApiAccount } from '../test-support/business-account.mjs';
 
 async function localApi(t) {
   const adminCredentials = { username: 'test-admin', password: 'fictional-admin', name: '测试管理员' };
@@ -44,7 +45,9 @@ async function localApi(t) {
   const status = async (path, input, session) => (await call(`/api/${path}`, input, session?.token)).status;
   for (const letter of ['a', 'b']) {
     const salesId = `sales-${letter}`;
-    await post('accounts/sales', { salesId, name: `测试销售 ${letter.toUpperCase()}`, username: salesId, password: 'fictional-sales' }, admin);
+    await post('accounts/sales', { salesId, name: `测试销售 ${letter.toUpperCase()}`, username: salesId }, admin);
+    await activateApiAccount(base + '/api', salesId, 'fictional-sales');
+    await activateApiAccount(base + '/api', `broker-${letter}`, `demo-broker-${letter}`);
   }
   return { base, call, login, view, post, status, session, adminCredentials };
 }
@@ -229,7 +232,7 @@ const fixtureLead = { name: '测试股民甲', phone: '19900000003', stockName: 
 const date = today();
 
 test('合作登记、开户、首次扫码、留资与授权改归联动', async t => {
-  const { login, view, post, status } = await localApi(t);
+  const { base, login, view, post, status } = await localApi(t);
   const [sales, otherSales, admin, investor, otherInvestor] = await Promise.all([
     login('sales-a'), login('sales-b'), login('admin'), login('new-investor'), login('new-investor'),
   ]);
@@ -245,7 +248,8 @@ test('合作登记、开户、首次扫码、留资与授权改归联动', async
   const credentials = { username: 'fixture-broker', password: 'fictional-pass' };
   assert.equal(await status('accounts', { brokerId: id, ...credentials }, sales), 403);
   assert.equal(await status('auth/login', { platform: 'mini', ...credentials }), 401);
-  await post('accounts', { brokerId: id, ...credentials }, admin);
+  await post('accounts', { brokerId: id, username: credentials.username }, admin);
+  await activateApiAccount(base + '/api', credentials.username, credentials.password);
   const broker = await login('broker', credentials);
   assert.equal((await view(broker)).broker.name, registration.name);
   assert.deepEqual(await post('scan', { code: administered.code }, investor), { recorded: true });

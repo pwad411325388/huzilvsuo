@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { createStore } from '../store.mjs';
+import { activateStoredAccount } from '../test-support/business-account.mjs';
 import { createAppServer } from '../server.mjs';
 
 test('券商合作与开户检索支持状态统计、待开户优先与固定分页', async t => {
@@ -15,7 +16,9 @@ test('券商合作与开户检索支持状态统计、待开户优先与固定�
   const adminIdentity = store.verifyLogin(credentials);
   const adminToken = store.createSession(adminIdentity.id);
   const investorToken = store.createSession(store.registerInvestor({ phone: '19900007800', password: 'investor-password' }));
-  store.openSalesAccount({ role: 'admin', id: adminIdentity.subjectId }, { salesId: 'sales-a', name: '合作负责甲', username: 'broker-search-sales', password: 'sales-password' });
+  store.openSalesAccount({ role: 'admin', id: adminIdentity.subjectId }, { salesId: 'sales-a', name: '合作负责甲', username: 'broker-search-sales' });
+  activateStoredAccount(store, 'broker-search-sales', 'sales-password');
+  activateStoredAccount(store, 'broker-a', 'demo-broker-a');
   const salesToken = store.createSession(store.verifyLogin({ username: 'broker-search-sales', password: 'sales-password' }).id);
   const brokerToken = store.createSession(store.verifyLogin({ username: 'broker-a', password: 'demo-broker-a' }).id);
   store.close();

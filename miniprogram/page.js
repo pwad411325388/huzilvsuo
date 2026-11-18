@@ -1,4 +1,5 @@
-const { request, showLogin, capturePromos } = require('./client');
+const { request, showLogin, capturePromos, openProgress } = require('./client');
+const salesBoard = require('./sales-board');
 const periods = ['2020 年之前', '2020–2022 年', '2022–2024 年', '2024 年至今'];
 const actions = {
   lead: ['/leads', '留资已提交'], cooperation: ['/cooperations', '已保存签约绑定'],
@@ -7,34 +8,62 @@ const actions = {
 
 function makePage(isHome) {
   return {
-    data: { isHome, periods, period: '', signedOn: '', view: null, metric: 0, ledger: '洽谈中', selectedLead: null,
+    data: { ...salesBoard.state(), isHome, periods, period: '', signedOn: '', view: null, metric: 0, ledger: '洽谈中',
       ledgerRecords: [], assignedRecords: [], followFilter: '待跟进', editingName: false, busy: false, notice: '', phoneInvalid: false, security: false, recoveryCode: '' },
-    onHide() { this.setData({ security: false, recoveryCode: '' }); },
+    ...salesBoard.methods,
+    onHide() {
+      this.boardVisible = false;
+      this.boardSequence = (this.boardSequence || 0) + 1;
+      this.viewSequence = (this.viewSequence || 0) + 1;
+      this.workSequence = (this.workSequence || 0) + 1;
+      this.setData({ busy: false, security: false, recoveryCode: '', salesBoard: null, boardLoading: false });
+    },
     onLoad(query) { getApp().capturePromo(query); },
     onShow() {
-      if (!getApp().globalData.token) return this.returnToLogin();
+      this.boardVisible = true;
+      const token = getApp().globalData.token;
+      if (!token) return this.returnToLogin();
+      if (this.visibleToken !== token) {
+        this.workSequence = (this.workSequence || 0) + 1;
+        this.boardSequence = (this.boardSequence || 0) + 1;
+        this.boardToken = '';
+        this.setData({ ...salesBoard.state(), view: null, busy: false, security: false, recoveryCode: '' });
+        this.visibleToken = token;
+      }
       return this.once(async () => {
         const snapshot = await this.fetchView();
-        if (snapshot.actor.role === 'investor' && await capturePromos()) {
+        if (snapshot?.actor.role === 'investor' && await capturePromos()) {
           this.setData({ notice: '已记录首次推广来源' });
         }
       });
     },
     returnToLogin() {
-      this.setData({ view: null, selectedLead: null, editingName: false, ledgerRecords: [], assignedRecords: [], followFilter: '待跟进', notice: '', security: false, recoveryCode: '' });
+      this.workSequence = (this.workSequence || 0) + 1;
+      this.viewSequence = (this.viewSequence || 0) + 1;
+      this.boardSequence = (this.boardSequence || 0) + 1;
+      this.boardToken = '';
+      this.setData(salesBoard.state());
+      this.setData({ view: null, busy: false, editingName: false, ledgerRecords: [], assignedRecords: [], followFilter: '待跟进', notice: '', security: false, recoveryCode: '' });
       showLogin();
     },
     async once(work) {
       if (this.data.busy) return;
+      const sequence = this.workSequence = (this.workSequence || 0) + 1;
       this.setData({ busy: true, notice: '' });
       try { await work(); }
       catch (error) {
+        if (sequence !== this.workSequence) return;
         if (error.status === 401) this.returnToLogin();
         else this.setData({ notice: error.message });
-      } finally { this.setData({ busy: false }); }
+      } finally { if (sequence === this.workSequence) this.setData({ busy: false }); }
     },
     async fetchView() {
-      const snapshot = await request('/view');
+      const token = getApp().globalData.token;
+      const sequence = this.viewSequence = (this.viewSequence || 0) + 1;
+      let snapshot;
+      try { snapshot = await request('/view'); }
+      catch (error) { if (sequence !== this.viewSequence || token !== getApp().globalData.token) return null; throw error; }
+      if (sequence !== this.viewSequence || token !== getApp().globalData.token) return null;
       if (snapshot.actor.passwordChangeRequired) {
         wx.reLaunch({ url: '/pages/login/index' });
         return snapshot;
@@ -44,14 +73,13 @@ function makePage(isHome) {
         error.status = 401;
         throw error;
       }
-      const selected = this.data.selectedLead;
       const sameActor = this.data.view?.actor.id === snapshot.actor.id && this.data.view?.actor.role === snapshot.actor.role;
       const ledger = sameActor ? this.data.ledger : '洽谈中';
       const followFilter = sameActor ? this.data.followFilter : '待跟进';
       this.setData({ view: snapshot, signedOn: this.data.signedOn || snapshot.today, metric: sameActor ? this.data.metric : 0,
-        selectedLead: sameActor && selected ? snapshot.leads?.find(item => item.id === selected.id) || null : null,
         ledger, ledgerRecords: (snapshot.ledger || []).filter(item => item.status === ledger), followFilter,
         assignedRecords: (snapshot.assignedLeads || []).filter(item => !followFilter || item.status === followFilter) });
+      if (snapshot.actor.role === 'sales' && !isHome) await this.loadSalesBoard();
       return snapshot;
     },
     logout() {
@@ -95,11 +123,7 @@ function makePage(isHome) {
       const ledger = event.currentTarget.dataset.status;
       this.setData({ ledger, ledgerRecords: this.data.view.ledger.filter(item => item.status === ledger) });
     },
-    showLead(event) {
-      const id = event.currentTarget.dataset.id;
-      this.setData({ selectedLead: this.data.view.leads.find(item => item.id === id) || null });
-    },
-    closeLead() { this.setData({ selectedLead: null }); },
+    openProgress,
     copyCode() { wx.setClipboardData({ data: this.data.view.broker.code }); },
     submit(event) {
       const { type, id, version } = event.currentTarget.dataset;

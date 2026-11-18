@@ -6,3 +6,5 @@ data.js
 *.sqlite*
 *.zip
 交互原型/
+测试数据/
+__pycache__/

@@ -21,7 +21,7 @@ export function operationsPage(view, state, ui) {
     const pending = view.assignments.filter(lead => lead.needsAssignment);
     const recent = view.assignments.filter(lead => !lead.legacy).slice(0, 6);
     return `<div class="overview-cards">${totals.map(([label, value, unit], index) => `<button type="button" class="stat-card" data-action="overview-detail" data-value="${index}" aria-label="${label} ${value} ${unit}，查看明细"><strong>${value}<small>${unit}</small></strong><span>${label}</span><small class="stat-link">查看明细 →</small></button>`).join('')}</div>
-      ${panel('需要处理', `<div class="action-grid"><div><strong>${pending.filter(lead => !lead.legacy).length} 条新留资待分配</strong><p>核对股票公司和负责销售。</p>${button('进入待分配', 'open-queue', 'pending', 'class="primary"')}</div>
+      ${panel('需要处理', `<div class="action-grid"><div><strong>${pending.filter(lead => !lead.legacy).length} 条新留资待分配</strong><p>核对券商绑定销售或股票公司负责人。</p>${button('进入待分配', 'open-queue', 'pending', 'class="primary"')}</div>
         <div><strong>${pending.filter(lead => lead.legacy).length} 条历史留资待核对</strong><p>保留原记录，由运营逐条确认经办人。</p>${button('查看历史待核对', 'open-queue', 'legacy', 'class="secondary"')}</div></div>`)}
       ${panel('最近新增留资', assignmentTable(recent))}
       ${panel('统计口径', `<p>留资按条、客户按人、案件按件。案件仅统计 ${safe(view.caseCutoff)} 及之后的记录；在办为已受理及诉讼中，待受理另见客户案件。来源渠道按当前券商归属，经办销售按每条留资的当前分派。</p>`)}`;
@@ -43,7 +43,7 @@ export function operationsPage(view, state, ui) {
     const f = state.channelFilters;
     const rows = channelRows(view).filter(row => (!f.salesId || row.salesId === f.salesId) && (!f.search || row.name.includes(f.search.trim())));
     const selected = view.brokers.find(row => row.id === state.editChannel);
-    return panel('渠道管理', `<p>按客户当前券商归属汇总；自然流入单独显示。合作负责人变更不会改变留资经办销售。</p>
+    return panel('渠道管理', `<p>券商推荐的新留资自动交给当前合作负责人。已有经办人的留资可在「公司与派单」中转派。</p>
       <form data-form="channel-query" class="inline-form">${field('渠道名称', `<input name="search" value="${safe(f.search)}" maxlength="80">`)}
       ${field('合作负责人', select('salesId', view.sales.map(row => [row.id, row.name]), f.salesId, '全部销售'))}<button class="secondary">查询渠道</button></form>
       ${table(['渠道', '合作负责人', '账号状态', '签约日期', '留资客户', '留资', '在办 / 已结', '操作'], rows.map(row => [safe(row.name), safe(row.sales), safe(row.status), safe(row.date || '—'), `${row.customers} 人`, `${row.leads} 条`, `${row.ongoing} / ${row.closed}`,
@@ -79,7 +79,7 @@ export function operationsPage(view, state, ui) {
   });
   const company = view.companies.find(row => row.id === state.editCompany);
   const target = view.assignments.find(row => row.id === state.editAssignment);
-  const companyForm = panel(company ? `修改公司配置 · ${safe(company.name)}` : '新增公司派单配置', `<p>股票名称（或已登记别名）与代码须同时匹配同一公司。变更配置仅影响之后的新留资，已有记录需逐条转派。</p>
+  const companyForm = panel(company ? `修改公司配置 · ${safe(company.name)}` : '新增公司派单配置', `<p>自然流入的留资按公司派单。股票名称或别名和代码须匹配同一家公司。</p>
     <form data-form="company" class="form-grid query-grid"><input type="hidden" name="id" value="${safe(company?.id)}"><input type="hidden" name="version" value="${company?.version || ''}">
     ${field('公司 / 股票名称', `<input name="name" maxlength="80" value="${safe(company?.name)}" required>`)}
     ${field('股票代码', `<input name="stockCode" maxlength="20" value="${safe(company?.stockCode)}" placeholder="如 600000 或 NVDA" required>`)}
@@ -88,12 +88,12 @@ export function operationsPage(view, state, ui) {
     <label class="check"><input type="checkbox" name="active" ${!company || company.active ? 'checked' : ''}>启用自动匹配</label>
     <button class="primary">保存公司配置</button></form>${company ? button('取消修改', 'edit-company', '', 'class="quiet"') : ''}`);
   const assignmentEditor = target ? panel(`核对与分配 · ${safe(target.number)}`, `<p>${safe(target.name)} · ${safe(target.phone)} · 原填 ${safe(target.stockName)} / ${safe(target.stockCode)}</p>
-    <p>${safe(target.reason)}。核对公司后选择销售，原始留资和券商归属保留。</p><form data-form="assignment" class="form-grid query-grid">
+    <p>${safe(target.reason)}</p><form data-form="assignment" data-source="${target.brokerId ? 'broker' : 'direct'}" class="form-grid query-grid">
     <input type="hidden" name="leadId" value="${safe(target.id)}"><input type="hidden" name="version" value="${target.version}">
-    ${field('核对后的公司', select('companyId', view.companies.filter(item => item.active).map(item => [item.id, `${item.name} · ${item.stockCode}`]), target.companyId, '请选择公司'))}
+    ${field(target.brokerId ? '核对后的公司（选填）' : '核对后的公司', select('companyId', view.companies.filter(item => item.active).map(item => [item.id, `${item.name} · ${item.stockCode}`]), target.companyId, target.brokerId ? '保留现有公司资料' : '请选择公司'))}
     ${field('经办销售', select('salesId', activeSales, target.salesId, '请选择销售'))}${field('核对 / 转派说明', '<input name="reason" maxlength="200" required>')}
     <button class="primary">确认分配</button></form>${history(target.followups)}${button('取消', 'edit-assignment', '', 'class="quiet"')}`) : '';
-  return panel('留资分配', `<p>自然流入和券商推荐按同一公司规则派单。无法匹配、名称代码冲突或负责人不可用时，由运营核对后分配。</p>
+  return panel('留资分配', `<p>券商推荐的留资交给该券商绑定的销售，自然流入的留资按股票公司派单。缺少可用经办人时进入待分配。</p>
     <form data-form="assignment-query" class="form-grid query-grid">${field('队列', select('queue', [['pending', '新留资待分配'], ['legacy', '历史待核对'], ['assigned', '已分配'], ['all', '全部留资']], f.queue || 'pending'))}
     ${field('经办销售', select('salesId', view.sales.map(item => [item.id, item.name]), f.salesId, '全部销售'))}
     ${field('客户 / 股票 / 编号', `<input name="search" maxlength="100" value="${safe(f.search)}">`)}<button class="secondary">查询留资</button></form>

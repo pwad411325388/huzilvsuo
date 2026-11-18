@@ -16,7 +16,7 @@ export function renderClientPicker(scope) {
 export function renderClientRecords({ q = '', offset = 0 } = {}) {
   return `<section class="panel" data-client-records data-offset="${Number(offset) || 0}"><h2>客户记录</h2>
     <form data-client-records-query class="inline-form"><label class="field"><span>查找客户</span>
-    <input type="search" name="q" value="${safe(q)}" maxlength="100" placeholder="输入股票名称或代码、客户姓名、券商、手机号" autocomplete="off"></label>
+    <input type="search" name="q" value="${safe(q)}" maxlength="100" placeholder="输入股票名称或代码、客户姓名、券商、归属销售、手机号" autocomplete="off"></label>
     <button class="secondary">搜索客户</button><button type="button" class="quiet" data-records-reset>重置</button></form>
     <p class="muted">可检索首次或当前券商。同一客户的多条股票线索合并展示。</p>
     <p class="muted" data-records-status role="status" aria-live="polite">正在加载客户记录…</p><div data-records-table></div>
@@ -168,10 +168,11 @@ export function installClientSearch({ search, onError, onRecordsState }) {
 
   function renderRows(node, response) {
     node.querySelector('[data-records-table]').innerHTML = response.items.length ? `<div class="table-wrap"><table><thead><tr>
-      <th>客户</th><th>手机号</th><th>股票线索</th><th>首次券商</th><th>当前券商</th><th>客户签约</th></tr></thead><tbody>${response.items.map(client =>
+      <th>客户</th><th>手机号</th><th>股票线索</th><th>首次券商</th><th>当前券商</th><th>客户归属销售</th><th>客户签约</th></tr></thead><tbody>${response.items.map(client =>
       `<tr><td>${safe(client.name || '尚未留资')}${client.account ? `<small>登录账号 ${safe(client.account)}</small>` : ''}</td><td>${safe(client.phone || '—')}</td>
       <td class="client-stock-cell">${client.stocks.length ? client.stocks.map(stock => `<div>${safe(stock.stockName)} · ${safe(stock.stockCode)}${stock.leadCount > 1 ? `<small>${stock.leadCount} 条留资</small>` : ''}</div>`).join('') : '暂无股票线索'}</td>
-      <td>${safe(client.firstBrokerName || '—')}</td><td>${safe(client.brokerName || '—')}</td><td>${safe(client.signedOn || '未签约')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">未找到匹配的客户</div>';
+      <td>${safe(client.firstBrokerName || '—')}</td><td>${safe(client.brokerName || '—')}</td>
+      <td>${safe(client.brokerId ? client.ownerSalesName || '未登记姓名' : '无券商归属')}</td><td>${safe(client.signedOn || '未签约')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">未找到匹配的客户</div>';
     node.querySelector('[data-records-status]').textContent = `共 ${response.total} 位客户${response.total ? `，当前显示第 ${response.offset + 1}–${response.offset + response.items.length} 位` : ''}。`;
     node.querySelector('[data-records-page]').textContent = response.total ? `第 ${Math.floor(response.offset / response.limit) + 1} / ${Math.ceil(response.total / response.limit)} 页` : '暂无记录';
     node.querySelector('[data-records-prev]').disabled = !response.offset;

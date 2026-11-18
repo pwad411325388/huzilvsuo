@@ -1,5 +1,9 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { createRegistry } from './registry.mjs';
+import { createRegistrySalesBatch } from './registry-sales.mjs';
+import { createCaseProgress } from './case-progress.mjs';
+import { createSalesBoard } from './sales-board.mjs';
 
 export const caseStatuses = ['待受理', '已受理', '诉讼中', '已结案'];
 const businessDate = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' });
@@ -35,6 +39,7 @@ function passwordHash(password, salt = randomBytes(16).toString('hex')) {
 const unusedPassword = `${randomBytes(16).toString('hex')}:${randomBytes(32).toString('hex')}`;
 const tokenHash = token => createHash('sha256').update(token).digest('hex');
 export const sessionSeconds = 7 * 24 * 60 * 60;
+export const initialBusinessPassword = '12345678';
 
 function accountName(value) {
   const username = requiredText(value, '登录账号', 40).toLowerCase();
@@ -144,8 +149,8 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
   if (!identityColumns.includes('closedAt')) db.exec('ALTER TABLE identities ADD COLUMN closedAt TEXT');
   if (!identityColumns.includes('passwordChangeRequired')) db.exec('ALTER TABLE identities ADD COLUMN passwordChangeRequired INTEGER NOT NULL DEFAULT 0');
 
-  function transaction(callback) {
-    db.exec('BEGIN IMMEDIATE');
+  function transaction(callback, readOnly = false) {
+    db.exec(readOnly ? 'BEGIN' : 'BEGIN IMMEDIATE');
     try {
       const result = callback();
       db.exec('COMMIT');
@@ -175,10 +180,8 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
       const day = today();
       run('INSERT INTO brokers VALUES (?,?,?,?,?,?)', 'broker-a', '示例券商 A', 'sales-a', day, 10, 'DEMO-A');
       run('INSERT INTO brokers VALUES (?,?,?,?,?,?)', 'broker-b', '示例券商 B', 'sales-b', day, 0, 'DEMO-B');
-      run('INSERT INTO identities(username,password,role,subjectId,name) VALUES (?,?,?,?,?)',
-        'broker-a', passwordHash('demo-broker-a'), 'broker', 'broker-a', '示例券商 A');
-      run('INSERT INTO identities(username,password,role,subjectId,name) VALUES (?,?,?,?,?)',
-        'broker-b', passwordHash('demo-broker-b'), 'broker', 'broker-b', '示例券商 B');
+      addBusinessIdentity('broker-a', 'broker', 'broker-a', '示例券商 A');
+      addBusinessIdentity('broker-b', 'broker', 'broker-b', '示例券商 B');
       run('INSERT INTO clients VALUES (?,?,?,?,?,?)', 'customer-a', '虚构客户甲', '19900000001', 'broker-a', 'broker-a', now());
       run('INSERT INTO clients VALUES (?,?,?,?,?,?)', 'customer-b', '虚构客户乙', '19900000002', 'broker-b', 'broker-b', now());
       startInvestor('customer-new');
@@ -210,18 +213,27 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
       SELECT 'signing', s.clientId FROM signings s WHERE NOT EXISTS (
         SELECT 1 FROM report_numbers n WHERE n.kind = 'signing' AND n.subjectId = s.clientId
       ) ORDER BY s.signedOn, s.clientId`);
-    // Legacy leads are visible for human review; never infer their handler from a broker.
+    // Capture historical contacts before repairing eligible broker referrals below.
     run(`INSERT INTO lead_assignments(leadId,reason,method,legacy,contactName,contactPhone,updatedAt)
       SELECT l.id,'历史留资待核对','legacy',1,c.name,c.phone,? FROM leads l JOIN clients c ON c.id = l.clientId
       WHERE NOT EXISTS (SELECT 1 FROM lead_assignments a WHERE a.leadId = l.id)`, now());
     run(`INSERT INTO case_numbers(caseId) SELECT id FROM cases k WHERE NOT EXISTS
       (SELECT 1 FROM case_numbers n WHERE n.caseId = k.id) ORDER BY openedOn,id`);
+    if (!one("SELECT 1 FROM settings WHERE key = 'brokerReferralRoutingV1'")) {
+      assignPendingBrokerLeads({ role: 'system', id: 'brokerReferralRoutingV1' });
+      run("INSERT INTO settings(key,value) VALUES ('brokerReferralRoutingV1','1')");
+    }
   });
 
-  function addIdentity(username, password, role, subjectId, name) {
+  function addIdentity(username, password, role, subjectId, name, mustChange = false) {
     requireValue(!one('SELECT 1 FROM identities WHERE username = ?', username), '该登录账号已使用', 409);
-    return Number(run('INSERT INTO identities(username,password,role,subjectId,name) VALUES (?,?,?,?,?)',
-      username, passwordHash(password), role, subjectId, name).lastInsertRowid);
+    return Number(run('INSERT INTO identities(username,password,role,subjectId,name,passwordChangeRequired) VALUES (?,?,?,?,?,?)',
+      username, passwordHash(password), role, subjectId, name, Number(mustChange)).lastInsertRowid);
+  }
+
+  function addBusinessIdentity(username, role, subjectId, name, temporaryPassword) {
+    const password = temporaryPassword == null || temporaryPassword === '' ? initialBusinessPassword : accountPassword(temporaryPassword);
+    return { identityId: addIdentity(username, password, role, subjectId, name, true), initialPassword: password };
   }
 
   if (admin) transaction(() => {
@@ -299,7 +311,11 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
     return identity;
   }
 
-  function setPassword(identityId, password, mustChange = false) {
+  function setPassword(identity, password, mustChange = false) {
+    if (!mustChange && (identity.role === 'sales' || identity.role === 'broker')) {
+      requireValue(password !== initialBusinessPassword, '个人密码不能使用默认初始密码');
+    }
+    const identityId = identity.id;
     run('UPDATE identities SET password = ?, passwordChangeRequired = ? WHERE id = ?', passwordHash(password), Number(mustChange), identityId);
     run('DELETE FROM auth_sessions WHERE identityId = ?', identityId);
     run('DELETE FROM password_recovery WHERE identityId = ?', identityId);
@@ -310,7 +326,7 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
     return transaction(() => {
       const identity = managedIdentity(actor, input);
       requireValue(identity.status === 'active', '请先恢复账号后再重置密码');
-      setPassword(identity.id, password, true);
+      setPassword(identity, password, true);
       audit(actor, '后台重置密码', identity.username, { role: identity.role });
       return { changed: true, signedOut: identity.subjectId === actor.id && identity.role === actor.role };
     });
@@ -331,6 +347,7 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
       run('DELETE FROM password_recovery WHERE identityId = ?', identity.id);
       if (input.status === 'closed' && identity.role === 'broker') run('DELETE FROM pending_referrals WHERE brokerId = ?', identity.subjectId);
       audit(actor, input.status === 'closed' ? '注销账号' : '恢复账号', identity.username, { role: identity.role });
+      if (identity.role === 'sales' && input.status === 'active') assignPendingBrokerLeads(actor, 'AND b.salesId = ?', identity.subjectId);
       return { changed: true };
     });
   }
@@ -340,7 +357,7 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
     requireValue(password !== input.currentPassword, '新密码不能与当前密码相同');
     return transaction(() => {
       const identity = ownIdentity(actor, input.currentPassword);
-      setPassword(identity.id, password);
+      setPassword(identity, password);
       audit(actor, '自行修改密码', actor.account);
       return { changed: true };
     });
@@ -383,7 +400,7 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
       const matches = timingSafeEqual(Buffer.from(digest), Buffer.from(identity?.digest || '0'.repeat(64)));
       requireValue(matches && /^[a-f0-9]{32}$/.test(code) && identity && (!identity.expires || identity.expires > Date.now()),
         '账号或恢复码无效，恢复码也可能已使用或过期');
-      setPassword(identity.id, password);
+      setPassword(identity, password);
       run('DELETE FROM recovery_attempts WHERE accountDigest = ?', accountDigest);
       audit({ role: identity.role, id: identity.subjectId }, '通过恢复码重置密码', username);
       return { changed: true };
@@ -430,11 +447,12 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
     const matches = ["instr(lower(COALESCE(c.name,'')),lower(?)) > 0", "instr(COALESCE(c.phone,''),?) > 0",
       "instr(lower(COALESCE(i.username,'')),lower(?)) > 0"];
     if (records) matches.push("instr(lower(COALESCE(b.name,'')),lower(?)) > 0", "instr(lower(COALESCE(fb.name,'')),lower(?)) > 0",
+      "instr(lower(COALESCE(NULLIF(owner.name,b.salesId),'')),lower(?)) > 0",
       "EXISTS (SELECT 1 FROM leads l WHERE l.clientId = c.id AND (instr(lower(l.stockName),lower(?)) > 0 OR instr(lower(l.stockCode),lower(?)) > 0))");
-    const values = query ? Array(records ? 7 : 3).fill(query) : [];
+    const values = query ? Array(records ? 8 : 3).fill(query) : [];
     const source = `FROM clients c LEFT JOIN identities i ON i.role = 'investor' AND i.subjectId = c.id
       LEFT JOIN brokers b ON b.id = c.brokerId
-      ${records ? 'LEFT JOIN brokers fb ON fb.id = c.firstBrokerId LEFT JOIN signings s ON s.clientId = c.id' : ''}
+      ${records ? 'LEFT JOIN brokers fb ON fb.id = c.firstBrokerId LEFT JOIN sales_staff owner ON owner.id = b.salesId LEFT JOIN signings s ON s.clientId = c.id' : ''}
       WHERE ${eligibility}${query ? ` AND (${matches.join(' OR ')})` : ''}`;
     const total = one(`SELECT COUNT(*) AS total ${source}`, ...values).total;
     const ordering = query
@@ -442,7 +460,7 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
         c.name COLLATE NOCASE,c.phone,c.id`
       : 'c.createdAt DESC,c.id';
     const items = all(`SELECT c.id,c.name,c.phone,c.brokerId,b.name AS brokerName,i.username AS account
-      ${records ? ',fb.name AS firstBrokerName,s.signedOn' : ''} ${source}
+      ${records ? ',fb.name AS firstBrokerName,NULLIF(owner.name,b.salesId) AS ownerSalesName,s.signedOn' : ''} ${source}
       ORDER BY ${ordering} LIMIT ? OFFSET ?`, ...values, ...(query ? [query, query, query] : []), limit, offset);
     if (records && items.length) {
       const stocks = all(`SELECT clientId,stockName,stockCode,COUNT(*) AS leadCount FROM leads
@@ -499,29 +517,30 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
   function openAccount(actor, input) {
     const broker = brokerById(input.brokerId);
     const username = accountName(input.username);
-    const password = accountPassword(input.password);
     transaction(() => {
       requireValue(!one("SELECT 1 FROM identities WHERE role = 'broker' AND subjectId = ?", broker.id), '该券商已开户', 409);
-      addIdentity(username, password, 'broker', broker.id, broker.name);
+      addBusinessIdentity(username, 'broker', broker.id, broker.name, input.password);
       audit(actor, '券商开户', broker.id);
     });
     return { id: broker.id };
   }
 
-  function openSalesAccount(actor, input) {
+  function createSalesAccount(actor, input) {
     const name = requiredText(input.name, '销售姓名', 40);
     const username = accountName(input.username);
-    const password = accountPassword(input.password);
-    return transaction(() => {
-      const existing = input.salesId ? one('SELECT id FROM sales_staff WHERE id = ?', requiredText(input.salesId, '销售编号')) : null;
-      requireValue(!input.salesId || existing, '销售记录不存在', 404);
-      const id = existing?.id || randomUUID();
-      requireValue(!one("SELECT 1 FROM identities WHERE role = 'sales' AND subjectId = ?", id), '该销售已开户', 409);
-      run('INSERT INTO sales_staff(id,name) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET name = excluded.name', id, name);
-      addIdentity(username, password, 'sales', id, name);
-      audit(actor, '销售开户', id);
-      return { id };
-    });
+    const existing = input.salesId ? one('SELECT id FROM sales_staff WHERE id = ?', requiredText(input.salesId, '销售编号')) : null;
+    requireValue(!input.salesId || existing, '销售记录不存在', 404);
+    const id = existing?.id || randomUUID();
+    requireValue(!one("SELECT 1 FROM identities WHERE role = 'sales' AND subjectId = ?", id), '该销售已开户', 409);
+    run('INSERT INTO sales_staff(id,name) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET name = excluded.name', id, name);
+    const account = addBusinessIdentity(username, 'sales', id, name, input.password);
+    audit(actor, '销售开户', id);
+    if (existing) assignPendingBrokerLeads(actor, 'AND b.salesId = ?', id);
+    return { id, ...account };
+  }
+
+  function openSalesAccount(actor, input) {
+    return transaction(() => ({ id: createSalesAccount(actor, input).id }));
   }
 
   function activeBrokerFromCode(input) {
@@ -534,7 +553,10 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
   function bindFirstReferral(actor, brokerId) {
     const updated = run(`UPDATE clients SET firstBrokerId = ?, brokerId = ?
       WHERE id = ? AND firstBrokerId IS NULL AND brokerId IS NULL`, brokerId, brokerId, actor.id).changes;
-    if (updated) audit(actor, '首次推广归属', actor.id, { brokerId });
+    if (updated) {
+      audit(actor, '首次推广归属', actor.id, { brokerId });
+      assignPendingBrokerLeads(actor, 'AND c.id = ?', actor.id);
+    }
     return Boolean(updated);
   }
 
@@ -585,6 +607,7 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
       if (client.brokerId === broker.id) return { changed: false };
       run('UPDATE clients SET brokerId = ? WHERE id = ?', broker.id, client.id);
       audit(actor, '调整客户归属', client.id, { from: client.brokerId, to: broker.id });
+      assignPendingBrokerLeads(actor, 'AND c.id = ?', client.id);
       return { changed: true };
     });
   }
@@ -602,11 +625,12 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
       run('UPDATE clients SET name = ?, phone = ? WHERE id = ?', name, phone, actor.id);
       run('INSERT INTO leads VALUES (?,?,?,?,?,?)', id, actor.id, stockName, stockCode, period, now());
       run('INSERT INTO report_numbers(kind,subjectId) VALUES (?,?)', 'lead', id);
-      const assignment = matchCompany(stockName, stockCode);
+      const assignment = routeLead(actor.id, stockName, stockCode);
       run(`INSERT INTO lead_assignments(leadId,companyId,salesId,reason,method,contactName,contactPhone,updatedAt)
-        VALUES (?,?,?,?,?,?,?,?)`, id, assignment.companyId, assignment.salesId, assignment.reason, 'auto', name, phone, now());
+        VALUES (?,?,?,?,?,?,?,?)`, id, assignment.companyId, assignment.salesId, assignment.reason, assignment.method, name, phone, now());
       audit(actor, '新增留资', id);
-      audit(actor, assignment.salesId ? '按公司自动派单' : '留资进入待分配', id, assignment);
+      const action = assignment.method === 'broker' ? '按券商绑定销售派单' : '按公司自动派单';
+      audit(actor, assignment.salesId ? action : '留资进入待分配', id, assignment);
     });
     return { id };
   }
@@ -627,6 +651,31 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
 
   function availableSales(id) {
     return one("SELECT 1 FROM identities WHERE role = 'sales' AND subjectId = ? AND status = 'active'", id);
+  }
+
+  function routeLead(clientId, stockName, stockCode) {
+    const company = matchCompany(stockName, stockCode);
+    const broker = one('SELECT b.id,b.salesId FROM clients c JOIN brokers b ON b.id = c.brokerId WHERE c.id = ?', clientId);
+    if (!broker) return { ...company, method: 'auto' };
+    const salesId = availableSales(broker.salesId) ? broker.salesId : null;
+    return {
+      method: 'broker', brokerId: broker.id, companyId: company.companyId, salesId,
+      reason: salesId ? '按当前券商绑定销售自动分配' : '券商绑定销售未开户或账号已停用',
+    };
+  }
+
+  // Called inside the migration or the transaction that changed this client/channel/sales account.
+  function assignPendingBrokerLeads(actor, scope = '', ...values) {
+    const rows = all(`SELECT a.leadId,b.id AS brokerId,b.salesId
+      FROM lead_assignments a JOIN leads l ON l.id = a.leadId JOIN clients c ON c.id = l.clientId
+      JOIN brokers b ON b.id = c.brokerId
+      JOIN identities i ON i.role = 'sales' AND i.subjectId = b.salesId AND i.status = 'active'
+      WHERE a.salesId IS NULL AND a.method != 'manual' ${scope}`, ...values);
+    for (const row of rows) {
+      run(`UPDATE lead_assignments SET salesId = ?,method = 'broker',reason = '按当前券商绑定销售自动补派',
+        legacy = 0,version = version + 1,updatedAt = ? WHERE leadId = ?`, row.salesId, now(), row.leadId);
+      audit(actor, '按券商绑定销售补派', row.leadId, { brokerId: row.brokerId, salesId: row.salesId });
+    }
   }
 
   function saveCompany(actor, input) {
@@ -672,19 +721,22 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
 
   function assignLead(actor, input) {
     const leadId = requiredText(input.leadId, '留资编号');
-    const companyId = requiredText(input.companyId, '核对后的公司');
+    const companyId = input.companyId ? requiredText(input.companyId, '核对后的公司') : null;
     const salesId = requiredText(input.salesId, '经办销售');
     const reason = requiredText(input.reason, '分配说明', 200);
     return transaction(() => {
-      const prior = one('SELECT * FROM lead_assignments WHERE leadId = ?', leadId);
+      const prior = one(`SELECT a.*,c.brokerId FROM lead_assignments a JOIN leads l ON l.id=a.leadId
+        JOIN clients c ON c.id=l.clientId WHERE a.leadId=?`, leadId);
       requireValue(prior, '留资不存在', 404);
       requireValue(prior.version === Number(input.version), '留资分派已被更新，请刷新后再操作', 409);
-      requireValue(one('SELECT 1 FROM companies WHERE id = ? AND active = 1', companyId), '请选择已启用的公司配置');
+      requireValue(companyId || prior.brokerId, '请先为自然流入留资核对公司');
+      if (companyId) requireValue(one('SELECT 1 FROM companies WHERE id = ? AND active = 1', companyId), '请选择已启用的公司配置');
+      const confirmedCompanyId = companyId ?? prior.companyId;
       requireValue(availableSales(salesId), '请选择已开户且正常的销售');
       run(`UPDATE lead_assignments SET companyId = ?,salesId = ?,reason = ?,method = 'manual',
-        version = version + 1,updatedAt = ? WHERE leadId = ?`, companyId, salesId, reason, now(), leadId);
+        version = version + 1,updatedAt = ? WHERE leadId = ?`, confirmedCompanyId, salesId, reason, now(), leadId);
       audit(actor, prior.salesId ? '调整留资经办销售' : '人工分配留资', leadId,
-        { fromSalesId: prior.salesId, fromCompanyId: prior.companyId, companyId, salesId, reason });
+        { fromSalesId: prior.salesId, fromCompanyId: prior.companyId, companyId: confirmedCompanyId, salesId, reason });
       return { changed: true };
     });
   }
@@ -700,6 +752,7 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
       if (broker.salesId === salesId) return { changed: false };
       run('UPDATE brokers SET salesId = ? WHERE id = ?', salesId, brokerId);
       audit(actor, '调整渠道合作负责人', brokerId, { from: broker.salesId, to: salesId, reason });
+      assignPendingBrokerLeads(actor, 'AND b.id = ?', brokerId);
       return { changed: true };
     });
   }
@@ -828,7 +881,7 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
         LEFT JOIN signings s ON s.clientId = c.id LEFT JOIN brokers b ON b.id = c.brokerId
         LEFT JOIN report_numbers n ON n.kind = 'signing' AND n.subjectId = s.clientId
         WHERE c.brokerId IS NOT NULL OR c.name IS NOT NULL ORDER BY c.createdAt DESC`);
-      return { actor, today: today(), caseCutoff, caseStatuses, clients,
+      return { actor, today: today(), caseCutoff, caseStatuses, clients, initialBusinessPassword,
         companies: all(`SELECT co.*,s.name AS salesName,i.status AS salesStatus FROM companies co
           LEFT JOIN sales_staff s ON s.id = co.salesId LEFT JOIN identities i ON i.role = 'sales' AND i.subjectId = co.salesId ORDER BY co.name`)
           .map(company => ({ ...company, aliases: all('SELECT name FROM company_names WHERE companyId = ? AND nameKey != ? ORDER BY name',
@@ -856,10 +909,16 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
         audit: all('SELECT actor,action,subject,details,createdAt FROM audit ORDER BY id DESC LIMIT 30'),
         integrations: { wps: '待提供 WPS 样表、字段映射和授权', wechat: '待提供 AppID、开发者权限和测试环境' } };
     }
-    return { actor, today: today(), ...buildBoard(actor), ...(actor.role === 'sales' ? { assignedLeads: assignedLeads(actor.id) } : {}) };
+    return { actor, today: today(), ...buildBoard(actor),
+      ...(actor.role === 'sales' ? { assignedLeads: assignedLeads(actor.id), ...registry.salesOverview(actor) } : {}) };
   }
 
+  const registry = createRegistry(db, { requireValue, transaction, audit });
+  const registrySalesBatch = createRegistrySalesBatch(db, { requireValue, transaction, createSalesAccount, audit });
+  const progress = createCaseProgress(db, { transaction, requireValue, registry, caseCutoff });
+  const salesBoard = createSalesBoard(db, { transaction, requireValue, today, caseCutoff });
   return { registerInvestor, verifyLogin, createSession, getSession, revokeSession, renameInvestor, captureReferral, redeemReferral,
+    registry, registrySalesBatch, salesBoard, progress: progress.detail, syncProgress: progress.sync,
     resetAccountPassword, setAccountStatus, changePassword,
     issueRecoveryCode, recoverPassword,
     registerBroker, openAccount, openSalesAccount, scan, reassign, addLead, addFollowup,

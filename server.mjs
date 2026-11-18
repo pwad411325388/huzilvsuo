@@ -1,5 +1,7 @@
 import { createServer } from 'node:http';
-import { createReadStream, mkdirSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import writeExcelFile from 'write-excel-file/node';
@@ -7,10 +9,13 @@ import { createStore, RequestError, sessionSeconds } from './store.mjs';
 import { reportDefinition, reportRows } from './web/report.js';
 
 const webRoot = fileURLToPath(new URL('./web/', import.meta.url));
+const runFile = promisify(execFile);
+const registryImporter = fileURLToPath(new URL('./scripts/import_registry.py', import.meta.url));
+const defaultRegistryFile = fileURLToPath(new URL('../测试数据/诉讼组—股民登记表格.xlsx', import.meta.url));
 const assets = {
-  '/': ['index.html', 'text/html'],
-  '/admin': ['index.html', 'text/html'],
-  '/admin/': ['index.html', 'text/html'],
+  '/': ['app-shell.html', 'text/html'],
+  '/admin': ['app-shell.html', 'text/html'],
+  '/admin/': ['app-shell.html', 'text/html'],
   '/app.js': ['app.js', 'text/javascript'],
   '/report.js': ['report.js', 'text/javascript'],
   '/analytics.js': ['analytics.js', 'text/javascript'],
@@ -18,6 +23,7 @@ const assets = {
   '/overview-detail.js': ['overview-detail.js', 'text/javascript'],
   '/client-search.js': ['client-search.js', 'text/javascript'],
   '/broker-accounts.js': ['broker-accounts.js', 'text/javascript'],
+  '/registry-panel.js': ['registry-panel.js', 'text/javascript'],
   '/broker-accounts.css': ['broker-accounts.css', 'text/css'],
   '/app.css': ['app.css', 'text/css'],
 };
@@ -93,8 +99,10 @@ function createXlsx(rows, sheet, reportColumns) {
   return writeExcelFile([headings, ...cells], { sheet, columns: reportColumns.map(({ width }) => ({ width })) }).toBuffer();
 }
 
-export function createAppServer({ database = ':memory:', cutoff, seed = false, admin } = {}) {
+export function createAppServer({ database = ':memory:', cutoff, seed = false, admin,
+  registryFile = process.env.REGISTRY_WORKBOOK || defaultRegistryFile } = {}) {
   const store = createStore(database, { cutoff, seed, admin });
+  let syncingRegistry = false;
   const routes = new Map([
     ['/api/cooperations', ['sales', store.registerBroker]],
     ['/api/accounts', ['admin', store.openAccount]],
@@ -112,6 +120,8 @@ export function createAppServer({ database = ':memory:', cutoff, seed = false, a
     ['/api/reassign', ['admin', store.reassign]],
     ['/api/signings', ['admin', store.saveSigning]],
     ['/api/cases', ['admin', store.saveCase]],
+    ['/api/registry/link', ['admin', store.registry.link]],
+    ['/api/registry/sales-batch', ['admin', store.registrySalesBatch.apply]],
   ]);
 
   function signIn(request, response, input, register, session) {
@@ -188,6 +198,21 @@ export function createAppServer({ database = ':memory:', cutoff, seed = false, a
       }
       if (request.method === 'GET' && pathname === '/api/view') return json(response, 200, store.view(actor));
       if (actor.passwordChangeRequired) throw new RequestError(403, '请先设置新的个人密码');
+      if (request.method === 'GET' && pathname === '/api/sales/board') {
+        return json(response, 200, store.salesBoard(actor, Object.fromEntries(url.searchParams)));
+      }
+      if (request.method === 'GET' && pathname === '/api/progress') {
+        return json(response, 200, store.progress(actor, Object.fromEntries(url.searchParams)));
+      }
+      if (request.method === 'GET' && pathname === '/api/registry/sales-batch') {
+        return json(response, 200, store.registrySalesBatch.preview(actor));
+      }
+      if (request.method === 'GET' && pathname === '/api/registry') {
+        return json(response, 200, store.registry.list(actor, Object.fromEntries(url.searchParams)));
+      }
+      if (request.method === 'GET' && pathname === '/api/registry/candidates') {
+        return json(response, 200, store.registry.candidates(actor, Object.fromEntries(url.searchParams)));
+      }
       if (request.method === 'GET' && pathname === '/api/clients/search') {
         return json(response, 200, store.searchClients(actor, Object.fromEntries(url.searchParams)));
       }
@@ -196,6 +221,26 @@ export function createAppServer({ database = ':memory:', cutoff, seed = false, a
       }
       if (request.method === 'POST' && pathname === '/api/auth/recovery-code') {
         return json(response, 200, store.issueRecoveryCode(actor, await readBody(request)));
+      }
+      if (request.method === 'POST' && pathname === '/api/registry/sync') {
+        if (actor.role !== 'admin') throw new RequestError(403, '请使用管理员账号更新登记台账');
+        await readBody(request);
+        if (database === ':memory:') throw new RequestError(409, '请在使用本地数据库的服务中更新登记台账');
+        if (!existsSync(registryFile)) throw new RequestError(404, '找不到登记表，请核对本地工作簿位置');
+        if (syncingRegistry) throw new RequestError(409, '登记台账正在更新');
+        syncingRegistry = true;
+        try {
+          const python = process.env.REGISTRY_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+          await runFile(python, [registryImporter, resolve(registryFile), '--db', resolve(database)], {
+            windowsHide: true, timeout: 300000, env: { ...process.env, PYTHONUTF8: '1' }
+          });
+        } catch (error) {
+          throw new RequestError(503, error.code === 'ENOENT' ? '找不到 Python 解释器，请检查 REGISTRY_PYTHON 设置'
+            : '未能完成更新，请检查工作簿是否已保存、表头是否完整以及数据库是否可写');
+        } finally {
+          syncingRegistry = false;
+        }
+        return json(response, 200, { ok: true });
       }
       if (request.method === 'GET' && pathname === '/api/export') {
         if (actor.role !== 'admin') throw new RequestError(403, '只有后台有权导出');

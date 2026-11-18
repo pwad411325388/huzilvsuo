@@ -1,5 +1,5 @@
 {
-  "pages": ["pages/login/index", "pages/home/index", "pages/mine/index"],
+  "pages": ["pages/login/index", "pages/home/index", "pages/mine/index", "pages/registry/index", "pages/progress/index"],
   "window": {
     "navigationBarTitleText": "股民索赔宝",
     "navigationBarBackgroundColor": "#152b49",

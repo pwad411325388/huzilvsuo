@@ -1,0 +1,27 @@
+<view class="screen">
+  <view class="panel">
+    <view class="heading">我的律所登记记录</view>
+    <input value="{{draft}}" bindinput="input" bindconfirm="search" confirm-type="search" maxlength="100" placeholder="输入姓名、销售或股票检索" />
+    <view class="chips"><button class="secondary" bindtap="search">搜索</button><button class="secondary" bindtap="reset">重置</button></view>
+  </view>
+  <view wx:if="{{loading}}" class="notice">正在读取登记记录…</view>
+  <view wx:elif="{{notice}}" class="notice">{{notice}}</view>
+  <view wx:elif="{{!items.length}}" class="empty">{{query ? '没有找到匹配的登记记录' : '暂无已关联的登记记录，可请律所管理员核对账号关联。'}}</view>
+  <view wx:else class="panel">
+    <view class="heading">共 {{total}} 条</view>
+    <button wx:for="{{items}}" wx:key="rowKey" class="record lead-button" bindtap="openProgress" data-kind="registry" data-id="{{item.rowKey}}">
+      <view class="line"><text class="strong">{{item.customer}} · {{item.stockName || item.stockCode}}</text><text wx:if="{{item.stage}}" class="tag">{{item.stage}}</text></view>
+      <view class="muted" wx:if="{{item.stockCode}}">股票代码 {{item.stockCode}}</view>
+      <view class="muted" wx:if="{{item.sales}}">登记销售 {{item.sales}}</view>
+      <view class="muted" wx:if="{{item.phone}}">合同联系电话 {{item.phone}}</view>
+      <view class="muted" wx:if="{{item.source}}">客户来源 {{item.source}}</view>
+      <view class="muted" wx:if="{{item.registeredOn}}">材料登记 {{item.registeredOn}}</view>
+      <view class="muted" wx:if="{{item.filedOn}}">立案日期 {{item.filedOn}}</view>
+      <view class="progress-link">查看进度 ›</view>
+    </button>
+    <view class="chips" wx:if="{{total > limit}}">
+      <button class="secondary" disabled="{{offset === 0}}" bindtap="previous">上一页</button>
+      <button class="secondary" disabled="{{offset + limit >= total}}" bindtap="next">下一页</button>
+    </view>
+  </view>
+</view>
