@@ -1,7 +1,9 @@
-import { reportDefinition, reportTypes, reportRows, salesLabel } from './report.js';
+import { reportDefinition } from './report.js';
 import { operationsPage } from './operations.js';
 import { renderClientPicker, renderClientRecords, installClientSearch } from './client-search.js';
 import { renderBrokerAccounts, mountBrokerAccounts } from './broker-accounts.js';
+import { businessBoardScope, businessBoardMatches, businessBoardParams, businessBoardPresentation } from './business-board.js';
+import { compareAccounts, compareRecent, orderLabels } from './list-order.js';
 
 const app = document.querySelector('#app');
 const accountBar = document.querySelector('#account-bar');
@@ -35,10 +37,85 @@ const state = { ready: false, registering: false, authBusy: false, editingName: 
   view: null, page: 'home', metric: 0, lead: '', ledger: '洽谈中', adminTab: 6, filters: {},
   recovering: false, security: false, recovery: null, accountFilters: {}, accountAction: null,
   assignmentFilters: {}, caseFilters: {}, salesFilters: {}, channelFilters: {}, editCompany: '', editAssignment: '', editChannel: '', followFilter: '待跟进', clientRecords: {}, brokerFilters: {}, overviewDetail: null,
-  salesBoard: salesBoardState() };
+  salesBoard: salesBoardState(), adminSales: {}, adminOverview: {}, adminData: {} };
 
-function salesBoardState(owner = '') {
-  return { owner, period: 'all', from: '', to: '', rangeFrom: '', rangeTo: '', metric: 'channels', offset: 0, data: null, error: '', dateError: '', loading: false, sequence: 0 };
+let adminDataPanel;
+async function showAdminData(container) {
+  if (!container || container.dataset.loaded) return;
+  container.dataset.loaded = 'true';
+  const revision = state.revision, owner = state.view?.actor.id, tab = state.adminTab;
+  const current = () => container.isConnected && state.revision === revision && state.adminTab === tab && state.view?.actor.role === 'admin' && state.view.actor.id === owner;
+  try {
+    const { mountAdminDataPanel } = await import('./admin-data-panel.js');
+    if (!current()) return;
+    adminDataPanel = mountAdminDataPanel(container, { request, download: downloadAdminData, page: container.dataset.adminDataHost,
+      initialState: state.adminData[tab] || {}, today: state.view.today,
+      onState: value => { if (current()) state.adminData[tab] = value; }, onError: handleError, isCurrent: current });
+  } catch {
+    if (current()) {
+      delete container.dataset.loaded;
+      container.setAttribute('aria-busy', 'false');
+      container.innerHTML = '<section class="panel"><p role="alert">业务数据暂未加载，请重试。</p><button class="secondary" data-action="retry-admin-data">重新加载</button></section>';
+    }
+  }
+}
+
+async function downloadAdminData(path, filename, signal, current) {
+  const response = await fetch(`${apiRoot}${path}`, { signal });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const failure = new Error(body.message || '导出失败，请重试'); failure.status = response.status; throw failure;
+  }
+  const blob = await response.blob();
+  if (!current() || signal.aborted) return;
+  const url = URL.createObjectURL(blob), link = document.createElement('a');
+  link.href = url; link.download = filename; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+let overviewPanel;
+async function showOverview(container) {
+  if (!container || container.dataset.loaded) return;
+  container.dataset.loaded = 'true';
+  const revision = state.revision, owner = state.view?.actor.id;
+  const current = () => container.isConnected && state.revision === revision && state.adminTab === 6 && state.view?.actor.role === 'admin' && state.view.actor.id === owner;
+  try {
+    const { mountOverviewPanel } = await import('./overview-panel.js');
+    if (!current()) return;
+    overviewPanel = mountOverviewPanel(container, { request, initialState: state.adminOverview, today: state.view.today,
+      onState: value => { if (current()) state.adminOverview = value; }, onError: handleError, isCurrent: current });
+  } catch {
+    if (current()) {
+      delete container.dataset.loaded;
+      container.setAttribute('aria-busy', 'false');
+      container.innerHTML = '<section class="panel"><p role="alert">数据总览暂未加载，请重试。</p><button class="secondary" data-action="retry-overview">重新加载</button></section>';
+    }
+  }
+}
+
+let adminSalesPanel;
+async function showAdminSales(container) {
+  if (!container || container.dataset.loaded) return;
+  container.dataset.loaded = 'true';
+  const revision = state.revision, owner = state.view?.actor.id;
+  const current = () => container.isConnected && state.revision === revision && state.adminTab === 7 && state.view?.actor.role === 'admin' && state.view.actor.id === owner;
+  try {
+    const { mountAdminSalesPanel } = await import('./admin-sales-panel.js');
+    if (!current()) return;
+    adminSalesPanel = mountAdminSalesPanel(container, { request, sales: state.view.sales, initialState: state.adminSales,
+      onState: value => { if (current()) state.adminSales = value; }, onError: handleError, isCurrent: current,
+      onRegistry: () => { if (current()) { state.adminTab = 9; render(); } } });
+  } catch {
+    if (current()) {
+      delete container.dataset.loaded;
+      container.setAttribute('aria-busy', 'false');
+      container.innerHTML = '<section class="panel"><p role="alert">销售看板暂未加载，请重试。</p><button class="secondary" data-action="retry-admin-sales">重新加载</button></section>';
+    }
+  }
+}
+
+function salesBoardState(owner = '', role = '') {
+  return { owner, role, period: 'all', from: '', to: '', rangeFrom: '', rangeTo: '', metric: role === 'broker' ? 'customers' : 'channels', offset: 0, data: null, error: '', dateError: '', loading: false, sequence: 0 };
 }
 let salesBoardAbort;
 function cancelSalesBoard() {
@@ -46,26 +123,28 @@ function cancelSalesBoard() {
   state.salesBoard.sequence += 1;
   state.salesBoard.loading = false;
   state.salesBoard.data = null;
+  state.salesBoard.error = '';
 }
 
 async function loadSalesBoard(offset = state.salesBoard.offset) {
   const board = state.salesBoard;
-  if (state.page !== 'mine' || state.view?.actor.role !== 'sales') return;
+  const scope = businessBoardScope(state.view?.actor, state.page, state.ledger);
+  if (!scope) return;
   salesBoardAbort?.abort();
   salesBoardAbort = new AbortController();
   const sequence = ++board.sequence;
   const revision = state.revision;
   const current = () => revision === state.revision && board === state.salesBoard && sequence === board.sequence
-    && state.page === 'mine' && state.view?.actor.role === 'sales' && state.view.actor.id === board.owner;
+    && businessBoardMatches(scope, state.view?.actor, state.page, state.ledger) && scope.owner === board.owner;
   board.loading = true; board.error = ''; board.data = null;
   render();
-  const params = { period: board.period, metric: board.metric, offset };
-  if (board.period === 'custom') Object.assign(params, { from: board.rangeFrom, to: board.rangeTo });
+  const params = businessBoardParams(board, scope, offset);
   try {
-    const result = await request('/sales/board?' + new URLSearchParams(params), undefined, salesBoardAbort.signal);
+    const result = await request(`/${scope.role}/board?` + new URLSearchParams(params), undefined, salesBoardAbort.signal);
     if (!current()) return;
     if (!result || !Array.isArray(result.metrics) || !Array.isArray(result.items)
-        || !result.metrics.some(item => item.key === result.selected)
+        || !result.metrics.some(item => item.key === result.selected) || result.selected !== params.metric
+        || result.period !== params.period || scope.ledger && result.ledger !== scope.ledger
         || !Number.isInteger(result.total) || result.total < 0 || !Number.isInteger(result.offset)
         || result.offset < 0 || !Number.isInteger(result.limit) || result.limit < 1) {
       throw new Error('统计数据暂未完整返回，请重试');
@@ -78,6 +157,10 @@ async function loadSalesBoard(offset = state.salesBoard.offset) {
   } finally {
     if (current()) { board.loading = false; render(); }
   }
+}
+
+function businessBoardVisible() {
+  return !!businessBoardScope(state.view?.actor, state.page, state.ledger);
 }
 
 function message(text, error = false) {
@@ -159,6 +242,9 @@ function resetView() {
   state.clientRecords = {};
   state.brokerFilters = {};
   state.overviewDetail = null;
+  state.adminSales = {};
+  state.adminOverview = {};
+  state.adminData = {};
   render();
 }
 
@@ -280,7 +366,7 @@ function accountManagement() {
     ${field('角色', select('role', Object.entries(roleNames), f.role, '全部角色'))}
     ${field('状态', select('status', [['active', '正常'], ['closed', '已注销']], f.status, '全部状态'))}
     <button class="secondary">筛选账号</button></form>
-    <p>共 ${accounts.length} 个账号</p><div class="table-wrap"><table><thead><tr><th>姓名</th><th>登录账号</th><th>角色</th><th>状态</th><th>操作</th></tr></thead>
+    <p>共 ${accounts.length} 个账号</p><p class="muted" data-order-label>排序：${safe(state.view.accountOrderLabel || state.view.orderLabels?.accounts || '正常账号在前，已注销在后；同组新建账号在前。')}</p><div class="table-wrap"><table><thead><tr><th>姓名</th><th>登录账号</th><th>角色</th><th>状态</th><th>操作</th></tr></thead>
     <tbody>${accounts.map(item => `<tr><td>${safe(item.name)}</td><td>${safe(item.username)}</td><td>${roleNames[item.role]}</td>
       <td>${item.status === 'closed' ? '已注销' : item.passwordChangeRequired ? '待修改密码' : '正常'}</td><td><div class="filters">
       ${item.status === 'active' ? button('重置密码', 'account-password', item.id, 'class="secondary"') + button('临时恢复码', 'account-recovery', item.id, 'class="secondary"') +
@@ -310,6 +396,8 @@ function renderBoard(metrics) {
 function renderSalesBoard() {
   const board = state.salesBoard;
   const data = board.data;
+  const scope = businessBoardScope(state.view?.actor, state.page, state.ledger);
+  const presentation = businessBoardPresentation(scope);
   const selected = data?.metrics.find(item => item.key === data.selected);
   const controls = `<div class="filters">${[['all', '全部'], ['month', '本月']].map(([period, label]) =>
     button(label, 'sales-board-period', period, `class="chip ${board.period === period ? 'selected' : ''}" aria-pressed="${board.period === period}"`)).join('')}</div>
@@ -317,28 +405,32 @@ function renderSalesBoard() {
       ${field('开始日期', `<input type="date" name="from" max="${safe(state.view.today)}" value="${safe(board.from)}" required>`)}
       ${field('结束日期', `<input type="date" name="to" max="${safe(state.view.today)}" value="${safe(board.to)}" required>`)}
       <button class="${board.period === 'custom' ? 'primary' : 'secondary'}">按日期查看</button></form>
-    ${board.dateError ? `<p role="alert" class="sales-board-error">${safe(board.dateError)}</p>` : ''}`;
+    ${board.dateError ? `<p role="alert" class="sales-board-error">${safe(board.dateError)}</p>` : ''}
+    ${presentation.showLedger ? `<div class="filters ledger-filters" aria-label="客户台账状态">${['洽谈中', '已签约'].map(label => button(label, 'ledger', label,
+      `class="chip ${state.ledger === label ? 'selected' : ''}" aria-pressed="${state.ledger === label}"`)).join('')}</div>` : ''}`;
   let content = empty('正在加载统计与明细…');
   if (board.error) content = `<p role="alert" class="sales-board-error">${safe(board.error)}</p>${button('重新加载', 'sales-board-retry', '', 'class="secondary"')}`;
   else if (data) {
-    const range = data.period === 'all' ? '累计全部数据（含历史同步）' : `${data.from} 至 ${data.to}`;
+    const range = data.period === 'all' ? state.view.actor.role === 'broker' ? '累计全部已归属客户与案件' : '累计全部数据（含历史同步）' : `${data.from} 至 ${data.to}`;
     const page = Math.floor(data.offset / data.limit) + 1;
     const pages = Math.max(1, Math.ceil(data.total / data.limit));
-    content = `<p class="muted">${safe(range)}</p><div class="metrics">${data.metrics.map(item =>
+    content = `<p class="muted">${safe(range)}</p>${presentation.showMetrics ? `<div class="metrics">${data.metrics.map(item =>
       `<button type="button" class="metric ${item.key === data.selected ? 'selected' : ''}" data-action="sales-board-metric" data-value="${safe(item.key)}" aria-pressed="${item.key === data.selected}">
-        <span>${safe(item.label)}</span><strong>${safe(item.value)}<small>${safe(item.unit)}</small></strong></button>`).join('')}</div>
+        <span>${safe(item.label)}</span><strong>${safe(item.value)}<small>${safe(item.unit)}</small></strong></button>`).join('')}</div>` : ''}
       ${(data.notes || []).map(note => `<p class="muted">${safe(note)}</p>`).join('')}
-      <div class="list-heading"><h2>${safe(selected.label)}</h2><span>${safe(data.total)} ${safe(selected.unit)}</span></div>
+      ${presentation.showSalesGuide ? `<div class="sales-record-guide"><p class="muted">同一客户的股票会合并展示。小程序留资请回首页逐条跟进；历史股票请在全部登记记录中按客户姓名或股票检索，查看对应进度。</p><div class="filters">${button('回首页查看留资', 'page', 'home', 'class="secondary"')}${button('查看全部登记记录', 'page', 'registry', 'class="secondary"')}</div></div>` : ''}
+      <div class="list-heading"><h2>${safe(presentation.label || selected.label)}</h2><span>${safe(data.total)} ${safe(selected.unit)}</span></div>
+      <p class="muted" data-order-label>排序：${safe(data.orderLabel || (data.selected === 'channels' ? orderLabels.sources : orderLabels.recent))}</p>
       ${selected.dateLabel ? `<p class="muted">按${safe(selected.dateLabel)}筛选</p>` : ''}
       ${data.period !== 'all' && selected.unknownDateCount ? `<p class="muted">另有 ${safe(selected.unknownDateCount)} ${safe(selected.unit)}未明确日期，可在全部数据中查看。</p>` : ''}
-      <div class="records">${data.items.map(item => recordCard({ ...item, openedOnLabel: '案件登记日期' })).join('') || empty()}</div>
-      <nav class="list-pagination" aria-label="销售统计明细分页">
+      <div class="records">${data.items.map(item => recordCard({ ...item, ...(state.view.actor.role === 'broker' ? { phone: '' } : {}), openedOnLabel: '案件登记日期' })).join('') || empty()}</div>
+      <nav class="list-pagination" aria-label="业务统计明细分页">
         ${button('上一页', 'sales-board-page', Math.max(0, data.offset - data.limit), `class="secondary" ${data.offset === 0 ? 'disabled' : ''}`)}
         <span>${page} / ${pages} 页 · 每页 ${data.limit} 条</span>
         ${button('下一页', 'sales-board-page', data.offset + data.limit, `class="secondary" ${data.offset + data.limit >= data.total ? 'disabled' : ''}`)}
       </nav>`;
   }
-  return `<section class="dashboard sales-board" aria-busy="${board.loading}"><h2>我的数据</h2>${controls}<div class="sales-board-content">${content}</div></section>`;
+  return `<section class="dashboard sales-board" data-board-mode="${presentation.showLedger ? 'ledger' : 'dashboard'}" aria-busy="${board.loading}"><h2>${safe(presentation.title)}</h2>${controls}<div class="sales-board-content">${content}</div></section>`;
 }
 
 function investor() {
@@ -361,7 +453,7 @@ function investor() {
     ${contact ? `<dl class="panel profile-contact" aria-label="本人留资联系信息">
       <div><dt>留资姓名</dt><dd>${safe(contact.name)}</dd></div><div><dt>留资手机号</dt><dd>${safe(contact.phone)}</dd></div>
     </dl>` : ''}
-    ${panel('留资记录', `<div class="records">${leads.map(lead => `<button type="button" class="record lead-card" data-action="lead" data-value="${safe(lead.id)}">
+    ${panel('留资记录', `<p class="muted" data-order-label>排序：${safe(state.view.orderLabels?.leads || orderLabels.recent)}</p><div class="records">${leads.map(lead => `<button type="button" class="record lead-card" data-action="lead" data-value="${safe(lead.id)}">
       <span class="avatar" aria-hidden="true">股</span><span class="record-main"><strong>${safe(lead.stockName)} · ${safe(lead.stockCode)}</strong>
       <span class="lead-meta">${safe(lead.createdOn)} · ${lead.cases.length ? `${lead.cases.length} 件案件` : '留资'}</span></span><span aria-hidden="true">→</span></button>`).join('') || empty('暂无留资记录')}
     </div>`)}${panel('转介绍', '<p>将咨询入口分享给有需要的股民。</p>' + button('复制咨询入口', 'share', '', 'class="secondary"'))}`;
@@ -373,13 +465,13 @@ function sales() {
     + '<div data-registry-host>正在打开登记台账…</div>';
   const records = state.view.assignedLeads.filter(lead => !state.followFilter || lead.status === state.followFilter);
   const preview = (state.view.registryPreview || []).map(row => `<article class="record"><div class="record-main">
-    <strong>${safe(row.customer)}</strong><p>${safe(row.stockName)} ${safe(row.stockCode)}</p></div></article>`).join('');
+    <strong>${safe(row.customer)}</strong><p>${safe(row.stockName)} ${safe(row.stockCode)}</p><p>材料登记日期 ${safe(row.registeredOn || '待核对')}</p><span class="tag">${safe(row.stage || '进度待核对')}</span></div></article>`).join('');
   return `${hero('销售端', '销售工作台', '跟进你的券商推荐的留资，以及分派给你的其他留资。')}
-    ${panel('我的登记客户', `<p class="muted">${safe(state.view.registryCount || 0)} 条登记</p>
+    ${panel('我的登记客户', `<p class="muted">${safe(state.view.registryCount || 0)} 条登记</p><p class="muted" data-order-label>排序：${safe(state.view.registryOrderLabel || state.view.orderLabels?.registryPreview || orderLabels.recent)}</p>
       <div class="records">${preview || empty('暂无已关联的登记记录')}</div>
       ${button('查看全部登记记录', 'page', 'registry', 'class="secondary"')}`)}
     ${panel('分派给我的留资', `<div class="filters">${[['待跟进', '待跟进'], ['已跟进', '已跟进'], ['', '全部']].map(([value, label]) =>
-      button(label, 'follow-filter', value, `class="chip ${state.followFilter === value ? 'selected' : ''}"`)).join('')}</div><p>共 ${records.length} 条</p>
+      button(label, 'follow-filter', value, `class="chip ${state.followFilter === value ? 'selected' : ''}"`)).join('')}</div><p>共 ${records.length} 条</p><p class="muted" data-order-label>排序：${safe(state.view.orderLabels?.assignedLeads || orderLabels.recent)}</p>
       <div class="records">${records.map(lead => `<article class="record"><div class="record-main"><div class="record-title"><h3>${safe(lead.name)}</h3>${tag(lead.status)}</div>
         <p>${safe(lead.number)} · ${safe(lead.createdOn)}</p><p>${safe(lead.stockName)} · ${safe(lead.stockCode)} · 核对公司 ${safe(lead.companyName)}</p>
         <p>手机 ${safe(lead.phone)} · 渠道 ${safe(lead.brokerName || '自然流入')}</p>
@@ -397,37 +489,33 @@ function sales() {
 function broker() {
   const { name, code } = state.view.broker;
   if (state.page === 'mine') {
-    const records = state.view.ledger.filter(item => item.status === state.ledger);
-    return `${hero('券商端', safe(name), '查看本券商的洽谈及已签约客户。')}
-      ${panel('客户台账', `<div class="filters" aria-label="台账状态">${['洽谈中', '已签约'].map(label => button(label, 'ledger', label,
-      `class="chip ${state.ledger === label ? 'selected' : ''}" aria-pressed="${state.ledger === label}"`)).join('')}</div>
-      <div class="records">${records.map(record => recordCard(record)).join('') || empty()}</div>`)}`;
+    return `${hero('券商端', safe(name), '按期间查看洽谈中及已签约客户台账。')}${renderSalesBoard()}`;
   }
   const link = `/?promo=${encodeURIComponent(code)}`;
   return `${hero('券商端', safe(name), '查看本券商的客户与案件统计。')}
     <section class="promo"><div><h2>专属推广码</h2><code>${safe(code)}</code></div><div>
     ${button('复制推广链接', 'share', link, 'class="secondary"')}</div></section>
-    ${renderBoard(state.view.metrics)}`;
+    ${renderSalesBoard()}`;
 }
 
 function adminContent() {
   const { clients, brokers, sales, leads, cases, caseStatuses, caseCutoff, audit, integrations } = state.view;
-  const brokerNames = brokers.map(item => [item.id, item.name]);
+  const onboardingSales = sales.slice().sort((a, b) => compareAccounts(a, b, true));
   const statusOptions = caseStatuses.map(status => [status, status]);
   const header = '';
   const operations = () => operationsPage(state.view, state, { safe, button, field, select, panel, empty, tag });
   if (state.adminTab === 9) return '<div data-registry-host>正在打开登记台账…</div>';
   if ([5, 6, 7, 8].includes(state.adminTab)) return operations();
   if (state.adminTab === 0) return header + accountManagement() + `<div class="admin-grid">${panel('销售账号开通', `<form data-form="sales-account" class="form-grid">
-    ${field('销售业务记录', select('salesId', sales.filter(item => !item.username).map(item => [item.id, item.name]), '', '新增销售'))}
+    ${field('销售业务记录', select('salesId', onboardingSales.filter(item => !item.username).map(item => [item.id, item.name]), '', '新增销售'))}
     ${field('销售姓名', '<input name="name" maxlength="40" required>')}
     ${field('专用账号', '<input name="username" minlength="3" maxlength="40" autocomplete="off" required>')}
     <p class="muted">${safe(initialPasswordHint())}</p>
-    <button class="primary">开通销售账号</button></form>`)}${panel('销售账号', sales.map(item => `<article class="admin-record">
+    <button class="primary">开通销售账号</button></form>`)}${panel('销售账号', `<p class="muted" data-order-label>排序：${safe(orderLabels.accountsPending)}</p>` + (onboardingSales.map(item => `<article class="admin-record">
     <div class="list-heading"><h3>${safe(item.name)}</h3>${tag(item.accountStatus === 'closed' ? '已注销' : item.username ? '已开户' : '待开户')}</div>
-    ${item.username ? `<p>账号 ${safe(item.username)}</p>` : ''}</article>`).join('') || empty('暂无销售账号'))}</div>` + renderBrokerAccounts(state.brokerFilters);
+    ${item.username ? `<p>账号 ${safe(item.username)}</p>` : ''}</article>`).join('') || empty('暂无销售账号')))}</div>` + renderBrokerAccounts(state.brokerFilters);
 
-  if (state.adminTab === 1) return header + `<div class="admin-grid">${panel('调整客户归属', `<form data-form="reassign" class="form-grid">
+  if (state.adminTab === 1) return header + panel('客户操作范围', `<p>下方签约与归属操作针对已建立小程序记录的客户。历史登记完整保存在全部客户档案和律所登记台账中，尚未建立小程序记录的档案不会出现在操作名单。</p><div class="filters">${button('查看全部客户档案', 'all-client-data', '', 'class="secondary"')}${button('打开律所登记台账', 'admin-tab', 9, 'class="secondary"')}</div>`) + `<div class="admin-grid">${panel('调整客户归属', `<form data-form="reassign" class="form-grid">
     ${renderClientPicker('reassign')}
     ${field('新券商', select('brokerId', brokers.filter(item => item.username && item.accountStatus === 'active').map(item => [item.id, item.name]), '', '选择已开户券商'))}
     <button class="primary">保存归属</button></form>`)}${panel('登记客户实际签约', `<form data-form="signing" class="form-grid">
@@ -436,36 +524,22 @@ function adminContent() {
     ${field('签约凭据说明', '<input name="reference" maxlength="160" required>')}
     <button class="primary">保存签约结果</button></form>`)}</div>` + renderClientRecords(state.clientRecords);
 
-  if (state.adminTab === 2) return operations() + `<details class="panel"><summary>录入案件与更新状态</summary>` + panel('录入新增案件', `<p>当前测试案件分界日为 ${safe(caseCutoff)}。</p><form data-form="case" class="form-grid">
+  if (state.adminTab === 2) return operations() + `<details class="panel"><summary>小程序案件录入与更新</summary><p class="muted">以下操作用于小程序留资对应的案件。历史登记进度由律所登记台账同步，已包含在上方全部案件列表。</p>${button('打开律所登记台账', 'admin-tab', 9, 'class="secondary"')}` + panel('录入新增案件', `<p>当前测试案件分界日为 ${safe(caseCutoff)}。</p><form data-form="case" class="form-grid">
     ${field('对应留资', select('leadId', leads.map(item => [item.id, `${item.name} · ${item.stockName} · ${dayOf(item.createdAt)}`]), '', '选择留资记录'))}
     ${field('案件名称', '<input name="title" maxlength="80" required>')}
     ${dateField('案件登记日期', 'openedOn')}${field('当前状态', select('status', statusOptions))}
-    <button class="primary">录入案件</button></form>`) + panel('更新案件状态', cases.map(item => `<article class="admin-record">
+    <button class="primary">录入案件</button></form>`) + panel('更新案件状态', `<p class="muted" data-order-label>排序：${safe(state.view.orderLabels?.cases || orderLabels.recent)}</p>` + (cases.slice().sort(compareRecent).map(item => `<article class="admin-record">
     <div class="list-heading"><h3>${safe(item.title)} · ${safe(item.name)}</h3>${tag(item.status)}</div><p>登记日期 ${safe(item.openedOn)}</p>
     <form data-form="case" class="inline-form"><input type="hidden" name="id" value="${safe(item.id)}">
-    ${field('当前状态', select('status', statusOptions, item.status))}<button class="secondary">更新状态</button></form></article>`).join('') || empty('暂无新增案件')) + '</details>';
+    ${field('当前状态', select('status', statusOptions, item.rawStatus ?? item.status))}<button class="secondary">更新状态</button></form></article>`).join('') || empty('暂无新增案件'))) + '</details>';
 
   if (state.adminTab === 3) {
-    const f = state.filters;
-    const definition = reportDefinition(f.type);
-    const reportColumns = definition.columns;
-    const records = reportRows(state.view, f);
-    const states = f.type === 'cases' ? caseStatuses : f.type === 'signings' ? ['洽谈中', '已签约'] : ['待分配', '待跟进', '已跟进'];
-    return header + panel('数据报表', `<p>${safe(definition.description)}</p><form data-form="query" class="form-grid query-grid">
-      ${field('记录类型', select('type', reportTypes, f.type || 'leads'))}
-      ${f.type === 'sales' ? '' : field('来源渠道', select('brokerId', [['__natural__', '自然流入'], ...brokerNames], f.brokerId, '全部渠道'))}
-      ${field(['signings', 'channels'].includes(f.type) ? '渠道合作负责人' : '销售', select('salesId', [...(f.type === 'sales' ? [] : [['__unassigned__', '待分配 / 无负责人']]), ...sales.map(item => [item.id, salesLabel(item)])], f.salesId, '全部销售'))}
-      ${field('搜索', `<input name="search" value="${safe(f.search)}" maxlength="100" placeholder="名称、股票或编号">`)}
-      ${definition.summary ? '' : field('状态', select('state', states.map(value => [value, value]), f.state, '全部状态'))}
-      ${definition.summary ? '' : field('起始日期', `<input type="date" name="from" value="${safe(f.from)}">`) + field('结束日期', `<input type="date" name="to" value="${safe(f.to)}">`)}
-      <div class="inline-form"><button class="primary">查询</button><button class="secondary" name="download" value="yes">导出 Excel</button></div></form>
-      <p>共 ${records.length} 条，导出与当前表单筛选一致。</p>${records.length ? `<div class="table-wrap"><table><thead><tr>${reportColumns.map(column => `<th>${column.label}</th>`).join('')}</tr></thead>
-      <tbody>${records.map(row => `<tr>${reportColumns.map(column => `<td>${safe(row[column.key] ?? '—')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : empty()}`);
+    return '<div data-admin-data-host="reports" aria-busy="true"><section class="panel" role="status">正在加载数据报表…</section></div>';
   }
 
   return header + panel('联调状态', `<dl><dt>WPS</dt><dd>${safe(integrations.wps)}</dd><dt>微信</dt><dd>${safe(integrations.wechat)}</dd></dl>`) +
-    panel('最近操作', audit.map(item => `<article class="admin-record"><h3>${safe(item.action)}</h3>
-      <p>${safe(item.actor)} · ${safe(item.subject)} · ${safe(item.createdAt)}</p>${item.details !== '{}' ? `<p>${safe(item.details)}</p>` : ''}</article>`).join('') || empty('暂无操作记录'));
+    panel('最近操作', `<p class="muted" data-order-label>排序：${safe(state.view.orderLabels?.audit || '按操作时间从新到旧。')}</p>` + (audit.map(item => `<article class="admin-record"><h3>${safe(item.action)}</h3>
+      <p>${safe(item.actor)} · ${safe(item.subject)} · ${safe(item.createdAt)}</p>${item.details !== '{}' ? `<p>${safe(item.details)}</p>` : ''}</article>`).join('') || empty('暂无操作记录')));
 }
 
 function admin() {
@@ -476,11 +550,17 @@ function admin() {
 }
 
 function render() {
+  adminDataPanel?.dispose();
+  adminDataPanel = null;
+  overviewPanel?.dispose();
+  overviewPanel = null;
+  adminSalesPanel?.dispose();
+  adminSalesPanel = null;
   const actor = state.view?.actor;
   const role = actor?.role;
-  if (role === 'sales' && state.salesBoard.owner !== actor.id) {
+  if (['sales', 'broker'].includes(role) && (state.salesBoard.owner !== actor.id || state.salesBoard.role !== role)) {
     cancelSalesBoard();
-    state.salesBoard = salesBoardState(actor.id);
+    state.salesBoard = salesBoardState(actor.id, role);
   }
   accountBar.hidden = role !== 'admin';
   accountBar.innerHTML = role === 'admin' ? `<strong>${safe(actor.name)} · ${safe(actor.account)}</strong><div>${button('账号安全', 'security', '', 'class="quiet"')}${button('退出登录', 'sign-out', '', 'class="quiet"')}</div>` : '';
@@ -491,6 +571,9 @@ function render() {
   if (role === 'admin') {
     app.innerHTML = admin();
     clientSearch.mount(app);
+    if (state.adminTab === 6) void showOverview(app.querySelector('[data-overview-host]'));
+    if ([2, 3, 8].includes(state.adminTab)) void showAdminData(app.querySelector('[data-admin-data-host]'));
+    if (state.adminTab === 7) void showAdminSales(app.querySelector('[data-admin-sales-host]'));
     if (state.adminTab === 9) void showRegistry(app.querySelector('[data-registry-host]'), true);
     mountBrokerAccounts(app, { request, onError: handleError, initialPasswordHint: initialPasswordHint(),
       onState: filters => { state.brokerFilters = filters; },
@@ -507,7 +590,7 @@ function render() {
   app.querySelector('[data-my-registry]')?.addEventListener('toggle', event => {
     if (event.currentTarget.open) void showRegistry(event.currentTarget.querySelector('[data-registry-host]'), false);
   });
-  if (role === 'sales' && state.page === 'mine' && !state.salesBoard.data && !state.salesBoard.loading && !state.salesBoard.error) void loadSalesBoard();
+  if (businessBoardVisible() && !state.salesBoard.data && !state.salesBoard.loading && !state.salesBoard.error) void loadSalesBoard();
 }
 
 async function copyLink(path) {
@@ -522,12 +605,16 @@ document.addEventListener('click', async event => {
   const { action, value } = target.dataset;
   try {
     switch (action) {
+      case 'retry-admin-data': if (state.view?.actor.role === 'admin' && [2, 3, 8].includes(state.adminTab)) void showAdminData(app.querySelector('[data-admin-data-host]')); break;
+      case 'retry-overview': if (state.view?.actor.role === 'admin' && state.adminTab === 6) void showOverview(app.querySelector('[data-overview-host]')); break;
+      case 'retry-admin-sales': if (state.view?.actor.role === 'admin' && state.adminTab === 7) void showAdminSales(app.querySelector('[data-admin-sales-host]')); break;
       case 'sales-board-period':
         if (!['all', 'month'].includes(value)) break;
         Object.assign(state.salesBoard, { period: value, offset: 0, dateError: '' });
         await loadSalesBoard(0); break;
       case 'sales-board-metric':
-        if (!['channels', 'customers', 'effective', 'closed'].includes(value)) break;
+        if (state.view?.actor.role === 'broker' && state.page === 'mine') break;
+        if (!(state.view?.actor.role === 'broker' ? ['customers', 'ongoing', 'closed', 'effective', 'signings'] : ['channels', 'customers', 'effective', 'closed']).includes(value)) break;
         Object.assign(state.salesBoard, { metric: value, offset: 0 });
         await loadSalesBoard(0); break;
       case 'sales-board-page': await loadSalesBoard(Number(value)); break;
@@ -560,11 +647,14 @@ document.addEventListener('click', async event => {
       case 'toggle-auth': if (!state.authBusy) { state.registering = !state.registering; message(''); render(); } break;
       case 'edit-name': state.editingName = !state.editingName; render(); break;
       case 'sign-out': await request('/auth/logout', {}); resetView(); message('已退出登录'); break;
-      case 'page': cancelSalesBoard(); state.page = value; state.metric = 0; state.lead = ''; state.editingName = false; state.security = false; state.recovery = null; message(''); await refresh(); break;
+      case 'page': cancelSalesBoard(); state.salesBoard.offset = 0; state.page = value; state.metric = 0; state.lead = ''; state.editingName = false; state.security = false; state.recovery = null; message(''); await refresh(); break;
       case 'metric': state.metric = Number(value); render(); app.querySelector('.filters .selected')?.focus(); break;
-      case 'ledger': state.ledger = value; render(); app.querySelector('.filters .selected')?.focus(); break;
+      case 'ledger':
+        if (state.view?.actor.role !== 'broker' || state.page !== 'mine' || !['洽谈中', '已签约'].includes(value)) break;
+        state.ledger = value; state.salesBoard.offset = 0; await loadSalesBoard(0); break;
       case 'lead': state.lead = value; await refresh(); break;
       case 'admin-tab': state.adminTab = Number(value); state.overviewDetail = null; state.accountAction = null; state.recovery = null; message(''); await refresh(); break;
+      case 'all-client-data': state.adminData[3] = { type: 'customers', period: 'all' }; state.adminTab = 3; message(''); await refresh(); break;
       case 'share': await copyLink(value); break;
     }
   } catch (error) { handleError(error); }

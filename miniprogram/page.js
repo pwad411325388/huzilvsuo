@@ -79,7 +79,7 @@ function makePage(isHome) {
       this.setData({ view: snapshot, signedOn: this.data.signedOn || snapshot.today, metric: sameActor ? this.data.metric : 0,
         ledger, ledgerRecords: (snapshot.ledger || []).filter(item => item.status === ledger), followFilter,
         assignedRecords: (snapshot.assignedLeads || []).filter(item => !followFilter || item.status === followFilter) });
-      if (snapshot.actor.role === 'sales' && !isHome) await this.loadSalesBoard();
+      if (snapshot.actor.role === 'broker' || (snapshot.actor.role === 'sales' && !isHome)) await this.loadSalesBoard();
       return snapshot;
     },
     logout() {
@@ -121,7 +121,9 @@ function makePage(isHome) {
     },
     pickLedger(event) {
       const ledger = event.currentTarget.dataset.status;
-      this.setData({ ledger, ledgerRecords: this.data.view.ledger.filter(item => item.status === ledger) });
+      if (!['洽谈中', '已签约'].includes(ledger)) return;
+      this.setData({ ledger, boardOffset: 0 });
+      return this.loadSalesBoard(0);
     },
     openProgress,
     copyCode() { wx.setClipboardData({ data: this.data.view.broker.code }); },

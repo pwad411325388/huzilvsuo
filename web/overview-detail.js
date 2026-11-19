@@ -1,4 +1,5 @@
 import { overview, caseRows, channelRows, isOngoing } from './analytics.js';
+import { compareRecent, comparePending, compareSourceSummary, orderLabels } from './list-order.js';
 
 const PAGE_SIZE = 20;
 const columns = entries => entries.map(([key, label]) => ({ key, label }));
@@ -29,7 +30,7 @@ function leadRow(lead) {
   };
 }
 
-function customerRows(view, selectedIds) {
+function customerRows(view, selectedIds, signed = false) {
   const clients = new Map(view.clients.map(client => [client.id, client]));
   const brokers = new Map(view.brokers.map(broker => [broker.id, broker]));
   const leadsByClient = new Map();
@@ -50,7 +51,7 @@ function customerRows(view, selectedIds) {
       entry.count += 1;
       stocks.set(key, entry);
     }
-    return {
+    const display = {
       customer: client.name || leads[0]?.name || '未登记姓名', phone: client.phone || leads[0]?.phone || '—',
       stocks: [...stocks.values()].map(stock => `${stock.stockName || '未填股票名称'}${stock.stockCode ? `（${stock.stockCode}）` : ''} · ${stock.count} 条`).join('；') || '暂无留资',
       firstBroker: client.firstBrokerName || brokers.get(client.firstBrokerId)?.name || '未关联',
@@ -58,7 +59,9 @@ function customerRows(view, selectedIds) {
       owner: client.brokerId ? (broker?.salesName && broker.salesName !== broker.salesId ? broker.salesName : '未登记姓名') : '无券商归属',
       sales: [...new Set(leads.map(lead => lead.salesName || '待分配'))].join('、') || '—', signedOn: client.signedOn || '未签约',
     };
-  });
+    const latest = leads.slice().sort(compareRecent)[0];
+    return { id, name: display.customer, registeredOn: signed ? client.signedOn || '' : latest?.createdOn ?? latest?.createdAt ?? '', display };
+  }).sort(compareRecent).map(row => row.display);
 }
 
 /** Build display values only: internal IDs remain in the snapshot and never become table cells. */
@@ -72,22 +75,25 @@ export function buildOverviewDetail(view, index) {
   if ([0, 3, 6].includes(index)) {
     const selected = index === 3 ? view.assignments.filter(lead => lead.needsAssignment)
       : index === 6 ? view.assignments.filter(lead => lead.createdOn.startsWith(month)) : view.assignments;
-    rows = selected.map(leadRow);
+    rows = selected.slice().sort(index === 3 ? (a, b) => comparePending(
+      { ...a, queue: a.legacy ? 'system_legacy' : 'system_new' }, { ...b, queue: b.legacy ? 'system_legacy' : 'system_new' }) : compareRecent).map(leadRow);
     tableColumns = leadColumns;
     description = index === 3 ? '按留资条数统计，包括新留资待分配和历史待核对；同一客户可有多条留资。'
       : index === 6 ? `按留资日期统计 ${month} 的全部留资记录；同一客户可有多条留资。`
         : '按全部留资记录统计，一条留资一行；同一客户多次留资分别计数。';
+    description += index === 3 ? orderLabels.pending : orderLabels.recent;
   } else if (index === 1 || index === 7) {
     const ids = index === 1 ? [...new Set(view.assignments.map(lead => lead.clientId))]
       : view.clients.filter(client => client.signedOn?.startsWith(month)).map(client => client.id);
-    rows = customerRows(view, ids);
+    rows = customerRows(view, ids, index === 7);
     tableColumns = clientColumns;
     description = index === 1 ? '按留资客户去重，一位客户一行；姓名和电话显示当前资料，股票线索合并同一股票的留资条数。'
       : `按客户实际签约日期统计 ${month} 的签约客户，一位客户一行；股票线索汇总该客户全部留资。`;
     description += '客户归属销售取当前券商的合作负责人，留资经办销售按每条股票留资的分派结果显示。';
+    description += index === 7 ? '按实际签约日期从新到旧排序。' : '按最近一次留资日期从新到旧排序，无日期在最后。';
   } else if (index === 2) {
     const realBrokerIds = new Set(view.brokers.map(broker => broker.id));
-    rows = channelRows(view).filter(channel => realBrokerIds.has(channel.id)).map(channel => ({
+    rows = channelRows(view).filter(channel => realBrokerIds.has(channel.id)).sort(compareSourceSummary).map(channel => ({
       broker: channel.name, sales: channel.sales, status: channel.status, signedOn: channel.date || '未登记',
       customers: channel.customers, leads: channel.leads, ongoing: channel.ongoing, closed: channel.closed,
     }));
@@ -96,13 +102,15 @@ export function buildOverviewDetail(view, index) {
       ['customers', '留资客户数'], ['leads', '留资条数'], ['ongoing', '在办案件'], ['closed', '已结案件'],
     ]);
     description = '按已登记的券商渠道统计，包括待开户、已开户和已注销渠道；不计入自然流入。客户和案件按当前券商归属汇总。';
+    description += orderLabels.sources;
   } else {
-    rows = caseRows(view).filter(record => index === 4 ? isOngoing(record) : record.status === '已结案').map(record => ({
+    rows = caseRows(view).filter(record => index === 4 ? isOngoing(record) : record.status === '已结案').sort(compareRecent).map(record => ({
       number: readableNumber('AJ', record.recordNumber), customer: record.customer, phone: record.phone || '—', title: record.title || '未登记案件名称',
       stockName: record.stockName || '—', stockCode: record.stockCode || '—', broker: record.broker, sales: record.handler, date: record.date, status: record.status,
     }));
     tableColumns = caseColumns;
     description = `按案件件数统计${view.caseCutoff ? `，仅包含 ${view.caseCutoff} 及之后登记的案件` : ''}；${index === 4 ? '在办包括已受理和诉讼中，不包含待受理及已结案' : '仅包含状态为已结案的案件'}。`;
+    description += orderLabels.recent;
   }
   return { title, description, unit, total, columns: tableColumns, rows };
 }

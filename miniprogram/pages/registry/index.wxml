@@ -9,6 +9,7 @@
   <view wx:elif="{{!items.length}}" class="empty">{{query ? '没有找到匹配的登记记录' : '暂无已关联的登记记录，可请律所管理员核对账号关联。'}}</view>
   <view wx:else class="panel">
     <view class="heading">共 {{total}} 条</view>
+    <view class="muted">排序：{{orderLabel}}</view>
     <button wx:for="{{items}}" wx:key="rowKey" class="record lead-button" bindtap="openProgress" data-kind="registry" data-id="{{item.rowKey}}">
       <view class="line"><text class="strong">{{item.customer}} · {{item.stockName || item.stockCode}}</text><text wx:if="{{item.stage}}" class="tag">{{item.stage}}</text></view>
       <view class="muted" wx:if="{{item.stockCode}}">股票代码 {{item.stockCode}}</view>

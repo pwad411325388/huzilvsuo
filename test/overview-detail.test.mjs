@@ -65,15 +65,16 @@ test('八项明细数量、名称和单位与总览完全一致，且只输出�
 test('客户明细按客户去重并汇总股票，展示当前资料和首次当前券商', () => {
   const detail = buildOverviewDetail(fixture(), 1);
   assert.equal(detail.rows.length, 2);
-  assert.deepEqual(detail.rows[0], {
+  assert.deepEqual(detail.rows[1], {
     customer: '现用姓名', phone: '19900000001', stocks: '甲公司（AAA） · 2 条；乙公司（BBB） · 1 条',
     firstBroker: '首次券商', broker: '当前券商', owner: '冬天', sales: '冬天、夏天', signedOn: '2026-11-01',
   });
-  assert.equal(detail.rows[1].broker, '自然流入');
-  assert.equal(detail.rows[1].owner, '无券商归属');
+  assert.equal(detail.rows[0].broker, '自然流入');
+  assert.equal(detail.rows[0].owner, '无券商归属');
+  assert.deepEqual(detail.rows.map(row => row.customer), ['乙客户', '现用姓名'], '客户按最近留资排序，不取账号创建或数组顺序');
   const signed = buildOverviewDetail(fixture(), 7);
-  assert.equal(signed.rows[0].stocks, detail.rows[0].stocks);
-  assert.equal(signed.rows[1].stocks, '暂无留资');
+  assert.equal(signed.rows[1].stocks, detail.rows[1].stocks);
+  assert.equal(signed.rows[0].stocks, '暂无留资');
 });
 
 test('转派留资后客户仍归当前券商负责人，可按归属销售搜索留资和本月签约客户', () => {
@@ -81,8 +82,9 @@ test('转派留资后客户仍归当前券商负责人，可按归属销售搜�
   for (const lead of view.assignments) lead.salesName = '实际经办销售';
   for (const index of [1, 7]) {
     const detail = buildOverviewDetail(view, index);
-    assert.equal(detail.rows[0].owner, '冬天');
-    assert.equal(detail.rows[0].sales, '实际经办销售');
+    const customer = detail.rows.find(row => row.customer === '现用姓名');
+    assert.equal(customer.owner, '冬天');
+    assert.equal(customer.sales, '实际经办销售');
     const html = renderOverviewDetail(view, { index, q: '冬天', offset: 0 }, ui);
     assert.match(html, /客户归属销售<\/th>/);
     assert.match(html, /留资经办销售<\/th>/);
@@ -100,21 +102,44 @@ test('渠道不含自然流入，待分配包含历史待核对，案件按准�
   const view = fixture();
   const channels = buildOverviewDetail(view, 2);
   assert.equal(channels.rows.length, 3);
-  assert.deepEqual(channels.rows.map(row => row.status), ['待开户', '已开户', '已注销']);
+  assert.deepEqual(channels.rows.map(row => row.status), ['已开户', '待开户', '已注销']);
   assert.ok(channels.rows.every(row => row.broker !== '自然流入'));
   assert.equal(channels.rows.find(row => row.broker === '当前券商').customers, 1);
   const pending = buildOverviewDetail(view, 3);
-  assert.deepEqual(pending.rows.map(row => row.number), ['LZ-000001', 'LZ-000002']);
-  assert.match(pending.rows[0].reason, /历史待核对/);
+  assert.deepEqual(pending.rows.map(row => row.number), ['LZ-000002', 'LZ-000001']);
+  assert.match(pending.rows[1].reason, /历史待核对/);
   const ongoing = buildOverviewDetail(view, 4);
-  assert.deepEqual(ongoing.rows.map(row => row.status), ['已受理', '诉讼中']);
-  assert.deepEqual(ongoing.rows.map(row => row.number), ['AJ-000001', 'AJ-000002']);
+  assert.deepEqual(ongoing.rows.map(row => row.status), ['诉讼中', '已受理']);
+  assert.deepEqual(ongoing.rows.map(row => row.number), ['AJ-000002', 'AJ-000001']);
   assert.deepEqual(buildOverviewDetail(view, 5).rows.map(row => row.status), ['已结案']);
 });
 
 test('本月统计包含月首月末并排除相邻月份', () => {
-  assert.deepEqual(buildOverviewDetail(fixture(), 6).rows.map(row => row.date), ['2026-11-01', '2026-11-30']);
-  assert.deepEqual(buildOverviewDetail(fixture(), 7).rows.map(row => row.signedOn), ['2026-11-01', '2026-11-30']);
+  assert.deepEqual(buildOverviewDetail(fixture(), 6).rows.map(row => row.date), ['2026-11-30', '2026-11-01']);
+  assert.deepEqual(buildOverviewDetail(fixture(), 7).rows.map(row => row.signedOn), ['2026-11-30', '2026-11-01']);
+});
+
+test('兼容明细先全量排序再分页，待处理分组旧到新，无日期末位且不修改输入集合', () => {
+  const view = fixture(), sample = view.assignments[0];
+  view.assignments = Array.from({ length: 45 }, (_, index) => ({ ...sample, id: String(index + 1).padStart(3, '0'),
+    number: `LZ-${String(index + 1).padStart(6, '0')}`, recordNumber: index + 1, name: '同名客户',
+    createdOn: '2026-11-05', needsAssignment: false, legacy: false })).reverse();
+  view.assignments.push({ ...sample, id: 'no-date', number: 'LZ-000046', createdOn: '', needsAssignment: false });
+  const before = structuredClone(view);
+  const detail = buildOverviewDetail(view, 0);
+  assert.equal(detail.rows.length, 46); assert.equal(detail.rows[0].number, 'LZ-000001');
+  assert.equal(detail.rows[44].number, 'LZ-000045'); assert.equal(detail.rows[45].number, 'LZ-000046');
+  const page = renderOverviewDetail(view, { index: 0, q: '', offset: 20 }, ui);
+  assert.match(page, /LZ-000021/); assert.match(page, /LZ-000040/); assert.doesNotMatch(page, /LZ-000020|LZ-000041/);
+  assert.deepEqual(view, before, '排序不能重新排列原view或修改字段');
+  view.assignments = [
+    { ...sample, id:'1',number:'LZ-000001',legacy:true,needsAssignment:true,createdOn:'2000-01-01' },
+    { ...sample, id:'2',number:'LZ-000002',legacy:false,needsAssignment:true,createdOn:'2026-11-19' },
+    { ...sample, id:'3',number:'LZ-000003',legacy:false,needsAssignment:true,createdOn:'2026-11-01' },
+    { ...sample, id:'4',number:'LZ-000004',legacy:false,needsAssignment:true,createdOn:'' },
+  ];
+  assert.deepEqual(buildOverviewDetail(view, 3).rows.map(row => row.number), ['LZ-000003','LZ-000002','LZ-000004','LZ-000001']);
+  assert.deepEqual(buildOverviewDetail(view, 0).rows.map(row => row.number), ['LZ-000002','LZ-000003','LZ-000001','LZ-000004']);
 });
 
 test('明细支持展示字段搜索、稳定钩子及20条分页，搜索和数据均安全转义', () => {

@@ -1,4 +1,5 @@
 import { progressNode, progressSteps } from './progress-dictionary.mjs';
+import { classifyCase } from './data-semantics.mjs';
 
 const records = { lead: 'leads', case: 'cases', registry: 'registry_entries' };
 const businessDate = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' });
@@ -94,7 +95,7 @@ export function createCaseProgress(db, { transaction, requireValue, registry, ca
       requireValue(record, '未找到可查看的记录', 404);
       const snapshot = one(`SELECT stage,node,completed_nodes${actor.role === 'sales' ? ',contract_number' : ''}
         FROM company_record_progress WHERE kind=? AND record_id=?`, kind, record.internalId);
-      const related = kind === 'lead' ? db.prepare(`SELECT k.id,k.title,k.status,k.openedOn,p.stage FROM cases k
+      const related = kind === 'lead' ? db.prepare(`SELECT k.id,k.title,k.status,k.openedOn,p.stage,p.node,p.record_id AS snapshot FROM cases k
         LEFT JOIN company_record_progress p ON p.kind='case' AND p.record_id=k.id
         WHERE k.leadId=? AND k.openedOn>=? ORDER BY k.openedOn DESC,k.id`).all(id, caseCutoff) : [];
       const sourceStatus = !snapshot && sourceStatuses.has(record.sourceStatus) ? record.sourceStatus : '';
@@ -121,7 +122,8 @@ export function createCaseProgress(db, { transaction, requireValue, registry, ca
       const response = { kind,id, title: record.title || record.stockName || record.stockCode || '',
         customer: record.customer, stockName: record.stockName, stockCode: record.stockCode, current, sourceStatus: current ? '' : sourceStatus,
         steps: progressSteps(current, actor.role, completed),
-        relatedCases: related.map(({id,title,status,openedOn}) => ({id,title,status: sourceStatuses.has(status) ? status : '',openedOn})) };
+        relatedCases: related.map(({id,title,status,openedOn,stage,node,snapshot}) => ({id,title,
+          status: classifyCase({ rawStatus: status, hasSnapshot: !!snapshot, progressStage: stage, progressNode: node }, actor.role).caseStatus, openedOn})) };
       for (const key of ['registeredOn','filedOn','openedOn']) {
         if (record[key]) response[key] = record[key];
       }

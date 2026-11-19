@@ -3,13 +3,13 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 
-function harness(fetchBoard) {
+function harness(fetchBoard, role = 'sales', isHome = false) {
   const app = { globalData: { token: 'seller-a' } };
   const requests = [];
   const client = {
     async request(path) {
       requests.push(path);
-      if (path === '/view') return { actor: { role: 'sales', id: app.globalData.token }, today: '2026-11-18' };
+      if (path === '/view') return { actor: { role, id: app.globalData.token }, today: '2026-11-18' };
       return fetchBoard(path, app.globalData.token);
     },
     showLogin() { app.globalData.token = ''; },
@@ -22,13 +22,13 @@ function harness(fetchBoard) {
   vm.runInNewContext(readFileSync(new URL('../miniprogram/page.js', import.meta.url), 'utf8'), {
     getApp: () => app, require: name => name === './sales-board' ? boardModule.exports : client, module: pageModule,
   });
-  const page = pageModule.exports(false);
+  const page = pageModule.exports(isHome);
   page.setData = values => Object.assign(page.data, values);
   return { page, app, requests };
 }
 function boardResponse(path, title = '模拟客户') {
   const query = new URL(path, 'http://test').searchParams;
-  const keys = ['channels', 'customers', 'effective', 'closed'];
+  const keys = path.startsWith('/broker/') ? ['customers','ongoing','effective','closed','signings'] : ['channels', 'customers', 'effective', 'closed'];
   return { period: query.get('period'), from: query.get('from'), to: query.get('to'), today: '2026-11-18',
     selected: query.get('metric'), metrics: keys.map(key => ({ key, label: key, value: 21, unit: '份' })),
     items: [{ id: 'one', title }], total: 21, offset: Number(query.get('offset')), limit: 20, notes: [] };
@@ -136,4 +136,35 @@ test('较早请求、离开页面和切换账号的在途响应不会污染销�
   await previousAccount;
   assert.equal(page.data.salesBoard.items[0].title, '销售乙');
   assert.equal(page.data.boardPeriod, 'all');
+});
+
+
+test('券商首页和我的均可筛选期间及案件，新增签约保持独立指标', async () => {
+  for (const home of [true, false]) {
+    const { page, requests } = harness(async path => boardResponse(path), 'broker', home);
+    await page.onShow();
+    assert.match(requests.at(-1), /^\/broker\/board\?period=all&metric=customers&offset=0/);
+    if (!home) {
+      assert.match(requests.at(-1), /ledger=negotiating/);
+      await page.pickLedger(event({status: '已签约'}));
+      assert.match(requests.at(-1), /metric=customers.*ledger=signed/);
+      await page.pickBoardPeriod(event({period:'month'}));
+      assert.match(requests.at(-1), /period=month&metric=customers.*ledger=signed/);
+      page.onHide(); await page.onShow();
+      assert.match(requests.at(-1), /period=month&metric=customers.*ledger=signed/);
+      continue;
+    }
+    await page.pickBoardPeriod(event({ period: 'month' }));
+    await page.pickBoardMetric(event({ key: 'signings' }));
+    assert.match(requests.at(-1), /period=month&metric=signings/);
+    await page.pickBoardMetric(event({ key: 'ongoing' }));
+    assert.match(requests.at(-1), /metric=ongoing/);
+    const count = requests.length;
+    await page.pickBoardMetric(event({ key: 'channels' }));
+    assert.equal(requests.length, count, '券商不能请求销售来源渠道接口');
+    page.onHide();
+    assert.equal(page.data.salesBoard, null);
+    await page.onShow();
+    assert.match(requests.at(-1), /^\/broker\/board\?period=month&metric=ongoing/);
+  }
 });

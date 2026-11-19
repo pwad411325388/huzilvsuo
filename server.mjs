@@ -19,11 +19,16 @@ const assets = {
   '/app.js': ['app.js', 'text/javascript'],
   '/report.js': ['report.js', 'text/javascript'],
   '/analytics.js': ['analytics.js', 'text/javascript'],
+  '/list-order.js': ['list-order.js', 'text/javascript'],
   '/operations.js': ['operations.js', 'text/javascript'],
   '/overview-detail.js': ['overview-detail.js', 'text/javascript'],
+  '/overview-panel.js': ['overview-panel.js', 'text/javascript'],
+  '/admin-data-panel.js': ['admin-data-panel.js', 'text/javascript'],
+  '/business-board.js': ['business-board.js', 'text/javascript'],
   '/client-search.js': ['client-search.js', 'text/javascript'],
   '/broker-accounts.js': ['broker-accounts.js', 'text/javascript'],
   '/registry-panel.js': ['registry-panel.js', 'text/javascript'],
+  '/admin-sales-panel.js': ['admin-sales-panel.js', 'text/javascript'],
   '/broker-accounts.css': ['broker-accounts.css', 'text/css'],
   '/app.css': ['app.css', 'text/css'],
 };
@@ -200,6 +205,29 @@ export function createAppServer({ database = ':memory:', cutoff, seed = false, a
       if (actor.passwordChangeRequired) throw new RequestError(403, '请先设置新的个人密码');
       if (request.method === 'GET' && pathname === '/api/sales/board') {
         return json(response, 200, store.salesBoard(actor, Object.fromEntries(url.searchParams)));
+      }
+      if (request.method === 'GET' && pathname === '/api/broker/board') {
+        return json(response, 200, store.brokerBoard(actor, Object.fromEntries(url.searchParams)));
+      }
+      if (request.method === 'GET' && pathname === '/api/sales/overview') {
+        return json(response, 200, store.adminSales.overview(actor, Object.fromEntries(url.searchParams)));
+      }
+      if (request.method === 'GET' && pathname === '/api/overview') {
+        return json(response, 200, store.adminSales.platformBoard(actor, Object.fromEntries(url.searchParams)));
+      }
+      if (request.method === 'GET' && pathname === '/api/data') {
+        return json(response, 200, store.adminSales.recordsReport(actor, Object.fromEntries(url.searchParams)));
+      }
+      if (request.method === 'GET' && pathname === '/api/data/export') {
+        const report = store.adminSales.recordsReport(actor, Object.fromEntries(url.searchParams), true);
+        const xlsx = url.searchParams.get('format') === 'xlsx';
+        const body = xlsx ? await createXlsx(report.items, report.title, report.columns) : createCsv(report.items, report.columns);
+        response.writeHead(200, { 'Content-Type': xlsx ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'text/csv; charset=utf-8',
+          'Cache-Control': 'no-store', 'Content-Disposition': `attachment; filename=data-${report.type}.${xlsx ? 'xlsx' : 'csv'}` });
+        return response.end(body);
+      }
+      if (request.method === 'GET' && pathname === '/api/sales/details') {
+        return json(response, 200, store.adminSales.details(actor, Object.fromEntries(url.searchParams)));
       }
       if (request.method === 'GET' && pathname === '/api/progress') {
         return json(response, 200, store.progress(actor, Object.fromEntries(url.searchParams)));

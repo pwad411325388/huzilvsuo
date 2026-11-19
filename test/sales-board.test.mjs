@@ -64,7 +64,7 @@ test('销售看板合并授权台账、合作渠道和经办客户；同名不�
   assert.equal(snapshot.period, 'all'); assert.equal(snapshot.from, ''); assert.equal(snapshot.to, '2026-11-18');
   assert.equal(snapshot.total, 7);
   assert.equal(snapshot.metrics.find(row => row.key === 'customers').value, snapshot.total);
-  assert.equal(snapshot.metrics.find(row => row.key === 'channels').value, 2, 'NFKC名称归一但不会添加外部券商关系');
+  assert.equal(snapshot.metrics.find(row => row.key === 'channels').value, 3, 'NFKC名称归一，并计入已获授权经办留资的实际来源');
   const same = snapshot.items.filter(row => row.title === '同名客户' && row.phone === '19900000001');
   assert.equal(same.length, 1); assert.equal(same[0].recordCount, 4); assert.match(same[0].subtitle, /另一股票/);
   assert.equal(same[0].status, '已签约');
@@ -73,6 +73,8 @@ test('销售看板合并授权台账、合作渠道和经办客户；同名不�
   assert.ok(!JSON.stringify(snapshot).includes('不能看到'));
   assert.ok(!JSON.stringify(board({ metric: 'channels' })).includes('PRIVATE SOURCE'));
   assert.equal(board({ metric: 'channels' }).items.find(row => row.title === 'ALPHA').status, '已注销');
+  const handledSource = board({ metric: 'channels' }).items.find(row => row.title === 'Private channel');
+  assert.equal(handledSource.subtitle, '留资来源'); assert.equal(handledSource.status, '', '知悉经办留资来源不等于拥有该券商合作关系');
   assert.deepEqual(db.prepare('SELECT count(*) AS n FROM brokers').get().n, 3);
 });
 
@@ -83,7 +85,10 @@ test('确认身份优先：无手机号可通过关联合并，两个明确账�
   db.exec("INSERT INTO registry_links VALUES ('investor','同名客户','','3')");
   assert.equal(board({ metric: 'customers' }).total, 2, '手工确认关联优先于缺手机号');
   assert.ok(!board().notes.some(note => note.includes('条登记资料不完整')));
-  db.exec("INSERT INTO identities VALUES (6,'investor','other-identity','active'); INSERT INTO clients VALUES ('other-identity','同名客户','19900000001','b1','2026-11-02T00:00:00Z')");
+  db.exec(`INSERT INTO identities VALUES (6,'investor','other-identity','active');
+    INSERT INTO clients VALUES ('other-identity','同名客户','19900000001','b1','2026-11-02T00:00:00Z');
+    INSERT INTO leads VALUES ('other-lead','other-identity','另一身份股票','000006','2026-11-02T00:00:00Z');
+    INSERT INTO lead_assignments VALUES ('other-lead','sales-a')`);
   entry('unlinked-ambiguous');
   const result = board({ metric: 'customers' });
   assert.equal(result.total, 4, '明确不同身份不合并，未关联记录也不任意挂给一人');
@@ -142,11 +147,142 @@ test('日期缺失提示只计当前筛选之外的档案，混有已知日期�
   const month = board({ period: 'month', metric: 'customers' });
   assert.equal(month.total, 2);
   assert.equal(month.metrics.find(row => row.key === 'customers').unknownDateCount, 1);
-  assert.equal(month.metrics.find(row => row.key === 'channels').unknownDateCount, 2,
-    'ALPHA券商合作发生在历史且只有缺日期登记，本月尚未显示');
+  assert.equal(month.metrics.find(row => row.key === 'channels').unknownDateCount, 1,
+    'ALPHA已有本月实际留资，不因合作日期较早而遗漏或误提示缺日期');
   entry('mixed-known-source');
   assert.equal(board({ period: 'month' }).metrics.find(row => row.key === 'channels').unknownDateCount, 1,
     '同来源含本月登记已显示，不再次提示另有');
+});
+
+test('老客户新增股票按留资日期入期，摘要与结案只取对应登记队列', t => {
+  const { db, board } = fixture(t);
+  db.exec(`UPDATE clients SET createdAt='2019-01-01T00:00:00Z' WHERE id='alice';
+    UPDATE leads SET createdAt='2025-12-31T00:00:00Z' WHERE id='la';
+    INSERT INTO cases VALUES ('new-stock-closed','la2','本期股票结案','2026-11-15','已结案')`);
+  const input = { period: 'custom', from: '2026-11-02', to: '2026-11-02' };
+  const clients = board({ ...input, metric: 'customers' });
+  assert.equal(clients.total, 1);
+  assert.equal(clients.items[0].recordCount, 1);
+  assert.equal(clients.items[0].registeredOn, '2026-11-02');
+  assert.match(clients.items[0].subtitle, /测试股票乙/);
+  assert.doesNotMatch(clients.items[0].subtitle, /测试股票甲/);
+  assert.equal(clients.items[0].status, '已签约', '按登记队列展示当前签约状态');
+  assert.equal(clients.items[0].progressId, 'la2', '单条本期股票可直接进入该留资进度');
+  const cases = board({ ...input, metric: 'closed' });
+  assert.equal(cases.total, 1); assert.equal(cases.items[0].subtitle, '本期股票结案');
+  const channels = board({ ...input, metric: 'channels' });
+  assert.equal(channels.total, 1); assert.equal(channels.items[0].title, 'ALPHA');
+  assert.equal(board({ metric: 'closed', period: 'custom', from: '2025-12-31', to: '2025-12-31' }).total, 1);
+});
+
+test('自然流入及同客户不同经办股票按授权记录统计，不扩散其他销售的数据', t => {
+  const { db, board } = fixture(t);
+  db.exec(`INSERT INTO clients VALUES ('natural','自然客户','19900000041',NULL,'2020-01-01T00:00:00Z'),
+    ('unsubmitted','未留资账号','19900000042','b1','2026-11-18T00:00:00Z');
+    INSERT INTO leads VALUES ('natural-lead','natural','自然股票','000041','2026-11-18T00:00:00Z'),
+      ('same-client-private','bob','其他经办专属股票','900099','2026-11-18T00:00:00Z');
+    INSERT INTO lead_assignments VALUES ('natural-lead','sales-a'),('same-client-private','sales-b');
+    INSERT INTO cases VALUES ('other-handler-case','same-client-private','其他经办专属案件','2026-11-18','已结案')`);
+  const input = { period: 'custom', from: '2026-11-18', to: '2026-11-18' };
+  const result = board({ ...input, metric: 'customers' });
+  assert.equal(result.total, 2);
+  assert.ok(!JSON.stringify(result).includes('其他经办专属'));
+  assert.ok(!JSON.stringify(result).includes('未留资账号'));
+  const bob = result.items.find(row => row.title === '独立经办');
+  assert.equal(bob.recordCount, 1); assert.match(bob.subtitle, /经办股票/);
+  assert.equal(board({ ...input, metric: 'closed' }).total, 1);
+  const channels = board({ ...input, metric: 'channels' });
+  assert.equal(channels.total, 2);
+  assert.ok(channels.items.some(row => row.title === '自然流入'));
+  assert.ok(channels.items.some(row => row.title === 'Private channel' && row.subtitle === '留资来源'));
+});
+
+test('券商负责人不能凭合作关系继续查看已转派给其他销售的股票、案件或签约快照', t => {
+  const { db, board } = fixture(t);
+  db.exec(`UPDATE lead_assignments SET salesId='sales-b' WHERE leadId='la2';
+    DELETE FROM signings WHERE clientId='alice';
+    INSERT INTO company_record_progress VALUES ('lead','la2','intake','signed','[]');
+    INSERT INTO cases VALUES ('transferred-case','la2','转派股票结案','2026-11-17','已结案')`);
+  const owner = board({ metric: 'customers' });
+  const alice = owner.items.find(row => row.title === '同名客户');
+  assert.equal(alice.recordCount, 1); assert.match(alice.subtitle, /测试股票甲/);
+  assert.doesNotMatch(alice.subtitle, /测试股票乙/);
+  assert.equal(alice.status, '签约状态未确认');
+  assert.equal(alice.progressId, 'la');
+  assert.ok(!JSON.stringify(board({ metric: 'closed' })).includes('转派股票结案'));
+  const receiver = board({ metric: 'customers' }, { role: 'sales', id: 'sales-b' });
+  const received = receiver.items.find(row => row.title === '同名客户');
+  assert.equal(received.recordCount, 1); assert.match(received.subtitle, /测试股票乙/);
+  assert.doesNotMatch(received.subtitle, /测试股票甲/); assert.equal(received.status, '已签约');
+  assert.ok(board({ metric: 'closed' }, { role: 'sales', id: 'sales-b' }).items.some(row => row.subtitle === '转派股票结案'));
+  db.exec("UPDATE lead_assignments SET salesId='sales-b' WHERE leadId='la'");
+  assert.ok(!board({ metric: 'customers' }).items.some(row => row.title === '同名客户'));
+  assert.ok(board({ metric: 'channels' }).items.some(row => row.title === 'ALPHA'), '合法合作关系保留在来源渠道卡');
+  assert.ok(!JSON.stringify(board({ metric: 'closed' })).includes('早期结案'));
+});
+
+test('无可靠姓名电话的同一系统客户仍只计一份档案，日期范围只选相应股票', t => {
+  const { db, board } = fixture(t);
+  db.exec("UPDATE clients SET name=NULL,phone=NULL WHERE id='alice'; DELETE FROM identities WHERE subjectId='alice'");
+  const all = board({ metric: 'customers' });
+  assert.equal(all.total, 2);
+  const unnamed = all.items.find(row => row.title === '待留资客户');
+  assert.equal(unnamed.recordCount, 2);
+  const oneDay = board({ metric: 'customers', period: 'custom', from: '2026-11-02', to: '2026-11-02' });
+  assert.equal(oneDay.total, 1); assert.equal(oneDay.items[0].recordCount, 1);
+});
+
+test('未来登记不参与当前客户身份合并，不能改变今天的去重结果', t => {
+  const { db, entry, board } = fixture(t);
+  entry('known-today');
+  db.exec("INSERT INTO identities VALUES (6,'investor','future-identity','active')");
+  entry('future-identity', { name: '同名客户 ', phone: '19900000001', date: '2026-11-19' });
+  db.exec("INSERT INTO registry_links VALUES ('investor','同名客户 ','19900000001','6')");
+  const result = board({ metric: 'customers' });
+  assert.equal(result.total, 2);
+  assert.ok(!JSON.stringify(result).includes('2026-11-19'));
+  assert.equal(result.items.find(row => row.title === '同名客户').recordCount, 3);
+});
+
+test('来源先按可用状态再按档案量排序，注销大渠道不置顶且跨页不丢失', t => {
+  const { db, entry, board } = fixture(t);
+  db.exec(`INSERT INTO brokers VALUES ('active-empty','有效空来源','sales-a','2025-01-01');
+    INSERT INTO identities VALUES (6,'broker','active-empty','active')`);
+  for (let n = 0; n < 27; n++) for (let m = 0; m < n % 4 + 1; m++) entry(`source-${n}-${m}`, {
+    source: `历史来源${n}`, name: `来源客户${n}-${m}`, phone: '199000' + String(10000 + n * 4 + m), date: '2025-01-01',
+  });
+  for (let n = 0; n < 40; n++) entry('closed-channel-' + n, {
+    source: 'ALPHA', name: '注销来源客户' + n, phone: '199001' + String(10000 + n), date: '2026-11-18',
+  });
+  const first = board({ metric: 'channels' }), second = board({ metric: 'channels', offset: 20 });
+  const items = [...first.items, ...second.items];
+  assert.equal(items.length, first.total); assert.equal(new Set(items.map(row => row.id)).size, first.total);
+  assert.equal(items.at(-1).title, 'ALPHA'); assert.equal(items.at(-1).sourceStatus, 'closed');
+  assert.ok(items.at(-1).customerCount > items[0].customerCount, '注销客户量再大也不会排在有效来源之前');
+  const rank = { active: 0, pending: 1, closed: 2 };
+  for (let n = 1; n < items.length; n++) {
+    assert.ok(rank[items[n - 1].sourceStatus] <= rank[items[n].sourceStatus]);
+    if (items[n - 1].sourceStatus === items[n].sourceStatus) assert.ok(items[n - 1].customerCount >= items[n].customerCount);
+  }
+  assert.deepEqual(board({ metric: 'channels' }).items, first.items);
+  assert.match(first.orderLabel, /注销/);
+});
+
+test('客户与案件明细按登记日新到旧，四十条同日记录跨三页稳定且缺日期末置', t => {
+  const { entry, board } = fixture(t);
+  for (let n = 0; n < 46; n++) entry('date-order-' + n, {
+    name: '排序客户' + n, phone: '199002' + String(10000 + n),
+    date: n < 40 ? '2026-11-17' : n === 45 ? '' : '2020-01-01', stage: 'closure', node: 'closed',
+  });
+  for (const metric of ['customers', 'closed']) {
+    const pages = [0, 20, 40].map(offset => board({ metric, offset }));
+    const items = pages.flatMap(page => page.items);
+    assert.equal(items.length, pages[0].total); assert.equal(new Set(items.map(row => row.id)).size, items.length);
+    assert.equal(items.at(-1).registeredOn, '');
+    const dates = items.map(row => row.registeredOn).filter(Boolean);
+    assert.deepEqual(dates, dates.slice().sort().reverse());
+    assert.deepEqual(board({ metric, offset: 20 }).items, pages[1].items);
+  }
 });
 
 test('每卡统计与明细一致，20条稳定分页，摘要受限且不存在账户或登记表也可返回空板', t => {

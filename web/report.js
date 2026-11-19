@@ -1,4 +1,5 @@
 import { caseRows, channelRows, salesRows, matchesFilters, sourceLabel } from './analytics.js';
+import { compareRecent } from './list-order.js';
 
 export const reportColumns = [
   { key: 'number', label: '记录编号', width: 19 },
@@ -44,7 +45,7 @@ export function reportRows(view, filters = {}) {
   if (filters.type !== 'signings') return view.assignments.map(lead => ({ number: lead.number, customer: lead.name, phone: lead.phone,
     stockName: lead.stockName, stockCode: lead.stockCode, companyId: lead.companyId, company: lead.companyName || '', brokerId: lead.brokerId,
     broker: sourceLabel(lead), handlerId: lead.salesId, sales: lead.salesName || '待分配', date: lead.createdOn, status: lead.status }))
-    .filter(row => matchesFilters(row, filters));
+    .filter(row => matchesFilters(row, filters)).sort(compareRecent);
   const salesById = new Map(sales.map(staff => [staff.id, staff]));
   const source = clients.filter(client => client.signedOn).map(client => ({ client, date: client.signedOn, serial: client.signingNumber }));
   const prefix = 'QY-';
@@ -57,5 +58,5 @@ export function reportRows(view, filters = {}) {
     if (filters.search && !`${client.name} ${client.phone}`.includes(filters.search.trim())) return [];
     return [{ number: `${prefix}${String(serial).padStart(6, '0')}`, customer: client.name || '', broker: client.brokerName || '',
       sales: client.salesId ? salesLabel(salesById.get(client.salesId)) : '', date, status }];
-  });
+  }).sort(compareRecent);
 }

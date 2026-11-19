@@ -4,6 +4,10 @@ import { createRegistry } from './registry.mjs';
 import { createRegistrySalesBatch } from './registry-sales.mjs';
 import { createCaseProgress } from './case-progress.mjs';
 import { createSalesBoard } from './sales-board.mjs';
+import { createAdminSales } from './admin-sales.mjs';
+import { createBrokerBoard } from './broker-board.mjs';
+import { classifyCase } from './data-semantics.mjs';
+import { compareAccounts, compareRecent } from './web/list-order.js';
 
 export const caseStatuses = ['待受理', '已受理', '诉讼中', '已结案'];
 const businessDate = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' });
@@ -469,7 +473,8 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
       for (const { clientId, ...stock } of stocks) byClient.get(clientId).push(stock);
       for (const item of items) item.stocks = byClient.get(item.id);
     }
-    return { items, total, offset, limit, hasMore: offset + items.length < total };
+    return { items, total, offset, limit, hasMore: offset + items.length < total,
+      orderLabel: query ? '完整姓名、电话或账号匹配优先；同组按姓名、电话、固定编号排序。' : '按客户登记时间从新到旧，同时间按固定编号排序。' };
   }
 
   function registerBroker(actor, input) {
@@ -511,7 +516,8 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
       CASE WHEN i.id IS NULL THEN 'pending' ELSE i.status END AS accountStatus ${source}${eligibility}
       ORDER BY CASE WHEN i.id IS NULL THEN 0 WHEN i.status = 'active' THEN 1 ELSE 2 END,
         b.name COLLATE NOCASE,b.id LIMIT ? OFFSET ?`, ...values, ...(status && status !== 'pending' ? [status] : []), limit, offset);
-    return { items, total, offset, limit, hasMore: offset + items.length < total, counts };
+    return { items, total, offset, limit, hasMore: offset + items.length < total, counts,
+      orderLabel: '待开户在前，正常账号其次，已注销在后；同组按名称、固定编号排序。' };
   }
 
   function openAccount(actor, input) {
@@ -757,6 +763,17 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
     });
   }
 
+  function currentCases(rows, role = 'sales', includeRaw = false) {
+    const snapshots = new Map(all("SELECT record_id,stage,node FROM company_record_progress WHERE kind='case'")
+      .map(row => [row.record_id, row]));
+    return rows.map(row => {
+      const snapshot = snapshots.get(row.id);
+      const current = classifyCase({ rawStatus: row.status, hasSnapshot: !!snapshot,
+        progressStage: snapshot?.stage, progressNode: snapshot?.node }, role);
+      return { ...row, status: current.caseStatus, caseGroup: current.caseGroup, ...(includeRaw ? { rawStatus: row.status } : {}) };
+    });
+  }
+
   function assignedLeads(salesId) {
     const rows = all(`SELECT l.*,a.companyId,a.salesId,a.reason,a.method,a.legacy,a.version,a.updatedAt,
       a.contactName AS name,a.contactPhone AS phone,co.name AS companyName,s.name AS salesName,i.status AS salesStatus,
@@ -773,7 +790,7 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
       return { ...row, number: `LZ-${String(row.recordNumber).padStart(6, '0')}`, createdOn: businessDate.format(new Date(row.createdAt)),
         needsAssignment, reason: row.salesId && row.salesStatus !== 'active' ? '负责销售账号不可用，请重新分配' : row.reason,
         followups, status: needsAssignment ? '待分配' : followups.some(item => item.assignmentVersion === row.version) ? '已跟进' : '待跟进',
-        cases: all('SELECT id,title,status,openedOn FROM cases WHERE leadId = ? AND openedOn >= ? ORDER BY openedOn DESC,id', row.id, caseCutoff) };
+        cases: currentCases(all('SELECT id,title,status,openedOn FROM cases WHERE leadId = ? AND openedOn >= ? ORDER BY openedOn DESC,id', row.id, caseCutoff)) };
     });
   }
 
@@ -832,34 +849,35 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
     const brokers = sales ? all('SELECT * FROM brokers WHERE salesId = ? ORDER BY signedOn DESC, name', actor.id)
       : [brokerById(actor.id)];
     const clients = all(`SELECT c.*, s.signedOn FROM clients c JOIN brokers b ON b.id = c.brokerId
-      LEFT JOIN signings s ON s.clientId = c.id WHERE ${sales ? 'b.salesId' : 'b.id'} = ? ORDER BY c.createdAt DESC`, actor.id);
-    const cases = all(`SELECT k.*, c.id AS clientId, c.name, c.phone FROM cases k JOIN leads l ON l.id = k.leadId
+      LEFT JOIN signings s ON s.clientId = c.id WHERE ${sales ? 'b.salesId' : 'b.id'} = ? ORDER BY c.createdAt DESC,c.id`, actor.id);
+    const cases = currentCases(all(`SELECT k.*, c.id AS clientId, c.name, c.phone FROM cases k JOIN leads l ON l.id = k.leadId
       JOIN clients c ON c.id = l.clientId JOIN brokers b ON b.id = c.brokerId
-      WHERE ${sales ? 'b.salesId' : 'b.id'} = ? AND k.openedOn >= ? ORDER BY k.openedOn DESC, k.id`, actor.id, caseCutoff);
+      LEFT JOIN lead_assignments a ON a.leadId=l.id
+      WHERE ${sales ? 'a.salesId' : 'b.id'} = ? AND k.openedOn >= ? ORDER BY k.openedOn DESC, k.id`, actor.id, caseCutoff));
     const customerCards = clients.map(client => boardCard(client, actor, client.signedOn ? client : null));
     const caseCards = cases.map(record => ({
       id: record.id, clientId: record.clientId,
       title: record.name || (sales ? `客户 ${record.clientId.slice(0, 8)}` : '待留资客户'),
       subtitle: record.title,
-      status: record.status, openedOn: record.openedOn,
+      status: record.status, caseGroup: record.caseGroup, openedOn: record.openedOn,
       ...(sales && record.name ? { phone: record.phone } : {}),
     }));
-    const closed = caseCards.filter(record => record.status === '已结案');
+    const closed = caseCards.filter(record => record.caseGroup === 'closed');
     const metric = (label, records, unit, kind) => ({ label, value: records.length, records, unit, kind });
     if (!sales) {
       const month = today().slice(0, 7);
-      const ledger = customerCards.map(card => ({ ...card, title: `客户 ${card.id.slice(0, 8)}` }));
+      const ledger = customerCards;
       return { broker: { name: brokers[0].name, code: brokers[0].code }, ledger,
         metrics: [metric('我的客户', customerCards, '人', 'customer'),
-          metric('在办案件', caseCards.filter(record => ['已受理', '诉讼中'].includes(record.status)), '件', 'case'),
+          metric('在办案件', caseCards.filter(record => record.caseGroup === 'ongoing'), '件', 'case'),
           metric('已结案', closed, '件', 'case'),
-          metric('本月新增签约', customerCards.filter(card => card.signedOn?.startsWith(month)), '人', 'customer')] };
+          metric('本月新增签约', customerCards.filter(card => card.signedOn?.startsWith(month)).sort(compareRecent), '人', 'customer')] };
     }
     const brokerCards = brokers.map(broker => {
       const account = one("SELECT status FROM identities WHERE role = 'broker' AND subjectId = ?", broker.id);
       return { id: broker.id, title: broker.name, subtitle: `签约 ${broker.signedOn}`,
         status: account?.status === 'closed' ? '已注销' : account ? '已开户' : '待开户' };
-    });
+    }).sort(compareAccounts);
     return { metrics: [metric('券商渠道', brokerCards, '家', 'broker'),
       metric('渠道客户', customerCards, '人', 'customer'),
       metric('有效客户', customerCards.filter(card => card.signedOn), '人', 'customer'),
@@ -874,14 +892,15 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
       return { actor, contact: client.name && client.phone ? { name: client.name, phone: client.phone } : null,
         today: today(), leads: leads.map(lead => ({ ...lead,
         createdOn: businessDate.format(new Date(lead.createdAt)),
-        cases: all('SELECT id,title,status,openedOn FROM cases WHERE leadId = ? AND openedOn >= ? ORDER BY openedOn DESC, id', lead.id, caseCutoff) })) };
+        cases: currentCases(all('SELECT id,title,status,openedOn FROM cases WHERE leadId = ? AND openedOn >= ? ORDER BY openedOn DESC, id', lead.id, caseCutoff), 'investor') })) };
     }
     if (actor.role === 'admin') {
       const clients = all(`SELECT c.*, s.signedOn, s.reference, b.name AS brokerName, b.salesId, n.number AS signingNumber FROM clients c
         LEFT JOIN signings s ON s.clientId = c.id LEFT JOIN brokers b ON b.id = c.brokerId
         LEFT JOIN report_numbers n ON n.kind = 'signing' AND n.subjectId = s.clientId
-        WHERE c.brokerId IS NOT NULL OR c.name IS NOT NULL ORDER BY c.createdAt DESC`);
+        WHERE c.brokerId IS NOT NULL OR c.name IS NOT NULL ORDER BY c.createdAt DESC,c.id`);
       return { actor, today: today(), caseCutoff, caseStatuses, clients, initialBusinessPassword,
+        accountOrderLabel: '正常账号在前，已注销在后；同组按账号创建顺序从新到旧。',
         companies: all(`SELECT co.*,s.name AS salesName,i.status AS salesStatus FROM companies co
           LEFT JOIN sales_staff s ON s.id = co.salesId LEFT JOIN identities i ON i.role = 'sales' AND i.subjectId = co.salesId ORDER BY co.name`)
           .map(company => ({ ...company, aliases: all('SELECT name FROM company_names WHERE companyId = ? AND nameKey != ? ORDER BY name',
@@ -893,19 +912,20 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
           COALESCE(b.name,s.name,c.name,i.name) AS name FROM identities i
           LEFT JOIN brokers b ON i.role = 'broker' AND b.id = i.subjectId
           LEFT JOIN sales_staff s ON i.role = 'sales' AND s.id = i.subjectId
-          LEFT JOIN clients c ON i.role = 'investor' AND c.id = i.subjectId ORDER BY i.id DESC`),
+          LEFT JOIN clients c ON i.role = 'investor' AND c.id = i.subjectId
+          ORDER BY CASE WHEN i.status='active' THEN 0 ELSE 1 END,i.id DESC`),
         brokers: all(`SELECT b.*, a.username, a.status AS accountStatus, s.name AS salesName FROM brokers b
           LEFT JOIN identities a ON a.role = 'broker' AND a.subjectId = b.id
-          LEFT JOIN sales_staff s ON s.id = b.salesId ORDER BY b.name`),
+          LEFT JOIN sales_staff s ON s.id = b.salesId ORDER BY b.name,b.id`).sort(compareAccounts),
         sales: all(`SELECT s.id,s.name,a.username,a.status AS accountStatus FROM sales_staff s
-          LEFT JOIN identities a ON a.role = 'sales' AND a.subjectId = s.id ORDER BY s.name,s.id`),
+          LEFT JOIN identities a ON a.role = 'sales' AND a.subjectId = s.id ORDER BY s.name,s.id`).sort(compareAccounts),
         leads: all(`SELECT l.*, COALESCE(a.contactName,c.name) AS name, n.number AS recordNumber FROM leads l JOIN clients c ON c.id = l.clientId
           LEFT JOIN lead_assignments a ON a.leadId = l.id
-          LEFT JOIN report_numbers n ON n.kind = 'lead' AND n.subjectId = l.id ORDER BY l.createdAt DESC`),
-        cases: all(`SELECT k.*, COALESCE(a.contactName,c.name) AS name, c.brokerId, b.salesId,n.number AS recordNumber FROM cases k JOIN leads l ON l.id = k.leadId
+          LEFT JOIN report_numbers n ON n.kind = 'lead' AND n.subjectId = l.id ORDER BY l.createdAt DESC,l.id`),
+        cases: currentCases(all(`SELECT k.*, COALESCE(a.contactName,c.name) AS name, c.brokerId, b.salesId,n.number AS recordNumber FROM cases k JOIN leads l ON l.id = k.leadId
           LEFT JOIN lead_assignments a ON a.leadId = l.id
           JOIN clients c ON c.id = l.clientId LEFT JOIN brokers b ON b.id = c.brokerId LEFT JOIN case_numbers n ON n.caseId = k.id
-          WHERE k.openedOn >= ? ORDER BY k.openedOn DESC`, caseCutoff),
+          WHERE k.openedOn >= ? ORDER BY k.openedOn DESC,k.id`, caseCutoff), 'sales', true),
         audit: all('SELECT actor,action,subject,details,createdAt FROM audit ORDER BY id DESC LIMIT 30'),
         integrations: { wps: '待提供 WPS 样表、字段映射和授权', wechat: '待提供 AppID、开发者权限和测试环境' } };
     }
@@ -917,8 +937,10 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
   const registrySalesBatch = createRegistrySalesBatch(db, { requireValue, transaction, createSalesAccount, audit });
   const progress = createCaseProgress(db, { transaction, requireValue, registry, caseCutoff });
   const salesBoard = createSalesBoard(db, { transaction, requireValue, today, caseCutoff });
+  const adminSales = createAdminSales(db, { transaction, requireValue, today });
+  const brokerBoard = createBrokerBoard(db, { transaction, requireValue, today });
   return { registerInvestor, verifyLogin, createSession, getSession, revokeSession, renameInvestor, captureReferral, redeemReferral,
-    registry, registrySalesBatch, salesBoard, progress: progress.detail, syncProgress: progress.sync,
+    registry, registrySalesBatch, salesBoard, adminSales, brokerBoard, progress: progress.detail, syncProgress: progress.sync,
     resetAccountPassword, setAccountStatus, changePassword,
     issueRecoveryCode, recoverPassword,
     registerBroker, openAccount, openSalesAccount, scan, reassign, addLead, addFollowup,

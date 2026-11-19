@@ -61,12 +61,22 @@ test('台账销售开户按原名和业务星标关联，冲突保留，临时�
   await apply(stale.token, 409);
   assert.equal(db.prepare("SELECT count(*) AS n FROM identities WHERE name='林甲'").get().n, 0);
   const preview = await call(path);
+  assert.deepEqual(preview.rows.map(row => row.status), ['create', 'create', 'reuse', 'review', 'review', 'review', 'review']);
+  const reviewRows = preview.rows.filter(row => row.status === 'review');
+  assert.match(reviewRows.at(-1).reason, /已注销/);
+  assert.match(preview.orderLabel, /待开户/);
+  const repeatedPreview = await call(path);
+  assert.equal(repeatedPreview.token, preview.token);
+  assert.deepEqual(repeatedPreview.rows, preview.rows);
   const status = Object.fromEntries(preview.rows.map(row => [row.name, row.status]));
   assert.deepEqual(status, { 林甲:'create', 林乙:'reuse', 林丙:'review', 林丁:'review', 主任:'review', 林戊:'review', 林庚:'create' });
   assert.equal(preview.rows.find(row => row.name === '林甲').recordCount, 4);
   const { created, review, linkedRecords, linkedLabels } = await apply(preview.token);
   assert.equal(review.length, 4); assert.equal(linkedRecords, 6); assert.equal(linkedLabels, 4);
   assert.equal(created.length, 2);
+  assert.deepEqual(Object.fromEntries(created.map(row => [row.name, row.username])),
+    Object.fromEntries(preview.rows.filter(row => row.status === 'create').map(row => [row.name, row.username])),
+    '预览的优先排序不改变确认计划中的用户名分配');
   assert.ok(created.every(row => row.password === '12345678'));
   const hashes = created.map(row => db.prepare('SELECT password FROM identities WHERE username=?').get(row.username).password);
   assert.notEqual(hashes[0], hashes[1]);
@@ -84,7 +94,7 @@ test('台账销售开户按原名和业务星标关联，冲突保留，临时�
   const seller = await login({ username:newAccount.username, password:'replacement-credential' });
   const view = await call('/view', undefined, seller.token);
   assert.equal(view.registryCount, 4); assert.equal(view.registryPreview.length, 3);
-  assert.deepEqual(Object.keys(view.registryPreview[0]).sort(), ['customer', 'stockName', 'stockCode', 'rowKey'].sort());
+  assert.deepEqual(Object.keys(view.registryPreview[0]).sort(), ['customer', 'stockName', 'stockCode', 'rowKey', 'stage', 'registeredOn'].sort());
   const own = await call('/registry', undefined, seller.token);
   assert.equal(own.total, 4); assert.ok(own.items.every(item => ['林甲', '*林甲'].includes(item.sales)));
   const reused = await call('/registry', undefined, existing.token);

@@ -276,7 +276,7 @@ test('合作登记、开户、首次扫码、留资与授权改归联动', async
   assert.equal(dashboardCustomer.title, fixtureLead.name);
   assert.equal(dashboardCustomer.phone, undefined);
   assert.equal(brokerView.ledger[0].phone, undefined);
-  assert.ok(!brokerView.ledger[0].title.includes(fixtureLead.name));
+  assert.equal(brokerView.ledger[0].title, fixtureLead.name);
   assert.equal(await status('followups', { clientId: investor.actor.id, note: '越权尝试' }, otherSales), 403);
   await post('followups', { leadId: lead.id, version: 1, note: '已安排电话咨询' }, sales);
   assert.equal((await view(sales)).assignedLeads.find(row => row.id === lead.id).followups[0].note, '已安排电话咨询');

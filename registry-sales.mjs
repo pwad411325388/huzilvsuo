@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { compareName } from './web/list-order.js';
 
 // The register uses one leading star to mark business origin. Retain both
 // source labels in registry_links while grouping the sales name for opening accounts.
@@ -66,7 +67,14 @@ export function createRegistrySalesBatch(db, { transaction, requireValue, create
     checkAdmin(actor);
     return transaction(() => {
       const { plan, token } = buildPlan();
-      return { rows: plan.map(item => item.row), token };
+      // Preview priority must not change the name-ordered username allocation or
+      // the exact plan used by the confirmation token and apply().
+      const priority = { create: 0, reuse: 1, review: 2, linked: 3 };
+      const displayRows = plan.map(item => item.row).sort((a, b) => priority[a.status] - priority[b.status]
+        || (a.status === 'review' ? Number(a.reason.includes('已注销')) - Number(b.reason.includes('已注销')) : 0)
+        || compareName(a, b));
+      return { rows: displayRows, token,
+        orderLabel: '待开户、待关联、待核对、已关联依次排列；同组按姓名，已注销的待核对账号置于组末。' };
     }, true);
   }
 

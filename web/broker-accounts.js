@@ -23,7 +23,7 @@ export function renderBrokerAccounts(filters = {}) {
       <label class="field"><span>开户状态</span><select name="status">${statuses.map(([value, label]) => `<option value="${value}"${value === selected.status ? ' selected' : ''}>${label}</option>`).join('')}</select></label>
       <div class="broker-search-actions"><button class="primary" type="submit">搜索券商</button><button class="secondary" type="button" data-broker-reset>重置</button></div>
     </form>
-    <div class="broker-list-meta"><p data-broker-summary role="status" aria-live="polite">正在加载券商…</p><p class="muted">待开户优先展示，每页 20 家</p></div>
+    <div class="broker-list-meta"><p data-broker-summary role="status" aria-live="polite">正在加载券商…</p><p class="muted" data-broker-order>排序：待开户在前，正常账号其次，已注销在后；同组按名称排序，每页 20 家。</p></div>
     <div class="broker-status-counts" data-broker-counts aria-label="券商账号状态统计"></div>
     <div class="broker-load-error" data-broker-error role="alert" hidden></div>
     <div class="broker-account-list" data-broker-list aria-busy="true"></div>
@@ -138,6 +138,8 @@ export function mountBrokerAccounts(root, { request, onError, onState, onChanged
       const first = items.length ? offset + 1 : 0;
       const last = items.length ? offset + items.length : 0;
       summary.textContent = `共 ${total} 家券商${total ? `，当前显示 ${first}–${last} 家` : ''}`;
+      const order = panel.querySelector('[data-broker-order]');
+      if (order && data.orderLabel) order.textContent = `排序：${data.orderLabel} 每页 20 家。`;
       counts.innerHTML = ['pending', 'active', 'closed'].map(status => `<span>${statuses.find(([value]) => value === status)[1]} <strong>${escapeHtml(Math.max(0, Number(data.counts?.[status]) || 0))}</strong></span>`).join('');
       pageLabel.textContent = `第 ${total ? Math.floor(offset / pageSize) + 1 : 1} / ${Math.max(1, Math.ceil(total / pageSize))} 页`;
       pagination.hidden = total <= pageSize;

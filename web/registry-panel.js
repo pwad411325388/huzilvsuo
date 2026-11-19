@@ -53,6 +53,7 @@ function mountSalesBatch(details, request, refresh, onError, initialPasswordHint
         const count = status => plan.rows.filter(row => row.status === status).length;
         body.innerHTML = plan.rows.length ? `<p>待新开 ${count('create')} 个，关联已有账号 ${count('reuse')} 个，已关联 ${count('linked')} 个，待核对 ${count('review')} 个。</p>
           <p>同一销售名的带星和无星登记归入同一账号。${escape(initialPasswordHint)}</p>
+          <p class="muted" data-order-label>排序：${escape(plan.orderLabel || '待新开、待关联、待核对、已关联；同组按姓名，待核对组内注销账号在后。')}</p>
           ${batchTable(plan.rows)}${count('create') || count('reuse') ? batchButton('commit', '确认开户并关联') : ''} ${batchButton('preview', '刷新预览')}` :
           `<p>台账中暂无销售登记。</p>${batchButton('preview', '刷新预览')}`;
       } else {
@@ -162,7 +163,7 @@ export function mountRegistryPanel(root, { request, onError, admin = false, init
           '上次导入 ' + imported.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '尚未导入'].filter(Boolean).join(' · ');
       }
       count.textContent = `共 ${data.total} 条登记资料`;
-      results.innerHTML = displayRows(data.items, canManage) + pagination(data, 'page');
+      results.innerHTML = `<p class="muted" data-order-label>排序：${escape(data.orderLabel || '按材料登记日期从新到旧，缺少日期的记录在最后。')}</p>` + displayRows(data.items, canManage) + pagination(data, 'page');
     } catch (error) {
       if (!connected() || controller.signal.aborted) return;
       count.textContent = '登记资料未加载';
@@ -206,7 +207,7 @@ export function mountRegistryPanel(root, { request, onError, admin = false, init
       const group = `<p>表内${typeLabels[selection.type]}：${show(data.sourceLabel)} · 影响 ${escape(data.affectedCount)} 条登记资料</p>`;
       if (data.currentLink) answer.innerHTML = '';
       else if (!selection.q) answer.innerHTML = group;
-      else answer.innerHTML = group + (data.items.length ? `<div class="filters">${data.items.map((candidate, i) =>
+      else answer.innerHTML = group + `<p class="muted" data-order-label>排序：${escape(data.orderLabel || '按姓名、登录账号排序。')}</p>` + (data.items.length ? `<div class="filters">${data.items.map((candidate, i) =>
         button('choose', accountName(candidate), `data-candidate="${i}"`)).join('')}</div>` : '<p>未找到匹配的账号</p>') + pagination(data, 'candidates');
       confirmation();
     } catch (error) {

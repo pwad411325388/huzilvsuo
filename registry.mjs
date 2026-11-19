@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { classifyCase } from './data-semantics.mjs';
 
 const limit = 20;
 const fields = `e.entry_key AS entryKey,e.source_row AS sourceRow,e.customer,e.phone,e.sales,
@@ -17,6 +18,11 @@ export function createRegistry(db, { requireValue, transaction, audit }) {
   const all = (sql, ...args) => db.prepare(sql).all(...args);
   const imported = () => !!one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='registry_entries'");
   db.function('registry_public_key', { deterministic: true }, rowKey);
+  db.function('registry_sort_date', { deterministic: true }, value => {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === value ? value : null;
+  });
   db.exec(`CREATE TABLE IF NOT EXISTS registry_links(
     type TEXT NOT NULL CHECK(type IN ('investor','sales')), source_name TEXT NOT NULL, source_phone TEXT NOT NULL,
     identity_id INTEGER NOT NULL REFERENCES identities(id),
@@ -62,7 +68,8 @@ export function createRegistry(db, { requireValue, transaction, audit }) {
   function list(actor, input, pageSize = limit) {
     authorize(actor, ['admin', 'sales', 'investor']);
     const { q, offset } = pagination(input);
-    const response = { items: [], total: 0, limit: pageSize, offset };
+    const response = { items: [], total: 0, limit: pageSize, offset,
+      orderLabel: '按材料登记日期从新到旧；同日按原表行号、登记键排序，缺少日期的记录在最后。' };
     if (actor.role === 'admin') Object.assign(response, { sourceName: '', importedAt: '' });
     if (!imported()) return response;
     if (actor.role === 'admin') {
@@ -71,7 +78,13 @@ export function createRegistry(db, { requireValue, transaction, audit }) {
       response.importedAt = meta.imported_at || '';
     }
     const args = [];
-    let source = 'FROM registry_entries e';
+    const columns = new Set(all('PRAGMA table_info(registry_entries)').map(col => col.name));
+    const extra = name => columns.has(name) ? `e.${name}` : "''";
+    const snapshots = !!one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='company_record_progress'");
+    const progressFields = snapshots
+      ? `,p.record_id AS hasSnapshot,COALESCE(p.stage,${extra('progress_stage')}) AS progressStage,COALESCE(p.node,${extra('progress_node')}) AS progressNode`
+      : `,NULL AS hasSnapshot,${extra('progress_stage')} AS progressStage,${extra('progress_node')} AS progressNode`;
+    let source = 'FROM registry_entries e' + (snapshots ? " LEFT JOIN company_record_progress p ON p.kind='registry' AND p.record_id=e.entry_key" : '');
     if (actor.role !== 'admin') {
       source += accountScope(actor.role);
       args.push(actor.role, actor.id);
@@ -81,9 +94,16 @@ export function createRegistry(db, { requireValue, transaction, audit }) {
       args.push(...searchColumns.map(() => q));
     }
     response.total = one(`SELECT count(*) AS n ${source}`, ...args).n;
-    response.items = all(`SELECT ${fields} ${source} ORDER BY e.source_row,e.entry_key LIMIT ? OFFSET ?`, ...args, pageSize, offset);
+    response.items = all(`SELECT ${fields}${progressFields} ${source}
+      ORDER BY registry_sort_date(e.registered_on) IS NULL,registry_sort_date(e.registered_on) DESC,e.source_row,e.entry_key
+      LIMIT ? OFFSET ?`, ...args, pageSize, offset);
     for (const row of response.items) {
+      const rawStage = row.stage;
+      row.stage = classifyCase({ rawStatus: rawStage, hasSnapshot: row.hasSnapshot,
+        progressStage: row.progressStage, progressNode: row.progressNode }, actor.role === 'investor' ? 'investor' : 'sales').caseStatus;
+      delete row.hasSnapshot; delete row.progressStage; delete row.progressNode;
       if (actor.role === 'admin') {
+        row.rawStage = rawStage;
         row.salesLink = row.sales ? currentLink('sales', row.sales, '') : null;
         row.investorLink = row.phone ? currentLink('investor', row.customer, row.phone) : null;
       } else {
@@ -119,7 +139,8 @@ export function createRegistry(db, { requireValue, transaction, audit }) {
     authorize(actor, ['admin']);
     const { q, offset } = pagination(input);
     const { sourceLabel, sourceToken, affectedCount, currentLink } = findGroup(input);
-    const response = { sourceLabel, sourceToken, affectedCount, currentLink, items: [], total: 0, offset, limit };
+    const response = { sourceLabel, sourceToken, affectedCount, currentLink, items: [], total: 0, offset, limit,
+      orderLabel: '登录账号精确匹配优先，其次按姓名、固定账号编号排序。' };
     if (!q) return response;
     const source = `FROM identities i
       LEFT JOIN clients c ON i.role='investor' AND c.id=i.subjectId
@@ -161,9 +182,10 @@ export function createRegistry(db, { requireValue, transaction, audit }) {
   return { progressRecord, list: (actor, input) => transaction(() => list(actor, input), true),
     salesOverview: actor => transaction(() => {
       authorize(actor, ['sales']);
-      const { total, items } = list(actor, {}, 3);
-      return { registryCount: total, registryPreview: items.map(({ customer, stockName, stockCode, rowKey }) =>
-        ({ customer, stockName, stockCode, rowKey })) };
+      const { total, items, orderLabel } = list(actor, {}, 3);
+      return { registryCount: total, registryOrderLabel: orderLabel,
+        registryPreview: items.map(({ customer, stockName, stockCode, rowKey, stage, registeredOn }) =>
+        ({ customer, stockName, stockCode, rowKey, stage, registeredOn })) };
     }, true),
     candidates: (actor, input) => transaction(() => candidates(actor, input), true), link };
 }

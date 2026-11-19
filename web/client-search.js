@@ -69,7 +69,7 @@ export function installClientSearch({ search, onError, onRecordsState }) {
       state.hasMore = response.hasMore;
       state.busy = false;
       renderOptions(node, state);
-      pickerStatus(node, response.total ? `找到 ${response.total} 位客户，已显示 ${state.items.length} 位。请核对信息后点击确认。` : '未找到符合条件的客户，请核对姓名或手机号。');
+      pickerStatus(node, response.total ? `找到 ${response.total} 位客户，已显示 ${state.items.length} 位。请核对信息后点击确认。排序：${response.orderLabel || '姓名或电话精确匹配优先，再按客户登记时间从新到旧。'}` : '未找到符合条件的客户，请核对姓名或手机号。');
     } catch (error) {
       if (error.name === 'AbortError' || !node.isConnected || serial !== state.serial) return;
       state.busy = false;
@@ -167,12 +167,12 @@ export function installClientSearch({ search, onError, onRecordsState }) {
   });
 
   function renderRows(node, response) {
-    node.querySelector('[data-records-table]').innerHTML = response.items.length ? `<div class="table-wrap"><table><thead><tr>
+    node.querySelector('[data-records-table]').innerHTML = `<p class="muted" data-order-label>排序：${safe(response.orderLabel || '按客户登记时间从新到旧，缺少日期的记录在最后。')}</p>` + (response.items.length ? `<div class="table-wrap"><table><thead><tr>
       <th>客户</th><th>手机号</th><th>股票线索</th><th>首次券商</th><th>当前券商</th><th>客户归属销售</th><th>客户签约</th></tr></thead><tbody>${response.items.map(client =>
       `<tr><td>${safe(client.name || '尚未留资')}${client.account ? `<small>登录账号 ${safe(client.account)}</small>` : ''}</td><td>${safe(client.phone || '—')}</td>
       <td class="client-stock-cell">${client.stocks.length ? client.stocks.map(stock => `<div>${safe(stock.stockName)} · ${safe(stock.stockCode)}${stock.leadCount > 1 ? `<small>${stock.leadCount} 条留资</small>` : ''}</div>`).join('') : '暂无股票线索'}</td>
       <td>${safe(client.firstBrokerName || '—')}</td><td>${safe(client.brokerName || '—')}</td>
-      <td>${safe(client.brokerId ? client.ownerSalesName || '未登记姓名' : '无券商归属')}</td><td>${safe(client.signedOn || '未签约')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">未找到匹配的客户</div>';
+      <td>${safe(client.brokerId ? client.ownerSalesName || '未登记姓名' : '无券商归属')}</td><td>${safe(client.signedOn || '未签约')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">未找到匹配的客户</div>');
     node.querySelector('[data-records-status]').textContent = `共 ${response.total} 位客户${response.total ? `，当前显示第 ${response.offset + 1}–${response.offset + response.items.length} 位` : ''}。`;
     node.querySelector('[data-records-page]').textContent = response.total ? `第 ${Math.floor(response.offset / response.limit) + 1} / ${Math.ceil(response.total / response.limit)} 页` : '暂无记录';
     node.querySelector('[data-records-prev]').disabled = !response.offset;

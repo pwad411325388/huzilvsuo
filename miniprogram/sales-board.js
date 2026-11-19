@@ -1,27 +1,29 @@
 const { request } = require('./client');
 
-function state() {
-  return { salesBoard: null, boardSelected: null, boardPeriod: 'all', boardFrom: '', boardTo: '', boardRangeFrom: '', boardRangeTo: '', boardMetric: 'channels',
+function state(role = 'sales') {
+  return { salesBoard: null, boardSelected: null, boardPeriod: 'all', boardFrom: '', boardTo: '', boardRangeFrom: '', boardRangeTo: '', boardMetric: role === 'broker' ? 'customers' : 'channels',
     boardLoading: false, boardError: '', boardDateError: '', boardOffset: 0, boardPage: 1, boardPages: 1 };
 }
 
 const methods = {
   async loadSalesBoard(offset = this.data.boardOffset || 0) {
     const token = getApp().globalData.token;
-    if (!token || this.data.view?.actor.role !== 'sales' || this.data.isHome || this.boardVisible === false) return;
+    const role = this.data.view?.actor.role;
+    if (!token || !['sales', 'broker'].includes(role) || (role === 'sales' && this.data.isHome) || this.boardVisible === false) return;
     if (this.boardToken !== token) {
       this.boardToken = token;
-      this.setData(state());
+      this.setData(state(role));
       offset = 0;
     }
     const { boardPeriod, boardRangeFrom, boardRangeTo, boardMetric } = this.data;
     const sequence = this.boardSequence = (this.boardSequence || 0) + 1;
     this.setData({ boardLoading: true, boardError: '', salesBoard: null, boardSelected: null });
     const params = { period: boardPeriod, metric: boardMetric, offset };
+    if (role === 'broker' && !this.data.isHome) Object.assign(params, { metric: 'customers', ledger: this.data.ledger === '已签约' ? 'signed' : 'negotiating' });
     if (boardPeriod === 'custom') Object.assign(params, { from: boardRangeFrom, to: boardRangeTo });
     const query = Object.keys(params).map(key => key + '=' + encodeURIComponent(params[key])).join('&');
     try {
-      const board = await request('/sales/board?' + query);
+      const board = await request('/' + role + '/board?' + query);
       if (sequence !== this.boardSequence || token !== getApp().globalData.token) return;
       if (!board || !Array.isArray(board.metrics) || !Array.isArray(board.items)
           || !board.metrics.some(item => item.key === board.selected)
@@ -61,7 +63,8 @@ const methods = {
   },
   pickBoardMetric(event) {
     const key = event.currentTarget.dataset.key;
-    if (!['channels', 'customers', 'effective', 'closed'].includes(key)) return;
+    const keys = this.data.view?.actor.role === 'broker' ? ['customers', 'ongoing', 'effective', 'closed', 'signings'] : ['channels', 'customers', 'effective', 'closed'];
+    if (!keys.includes(key)) return;
     this.setData({ boardMetric: key, boardOffset: 0 });
     return this.loadSalesBoard(0);
   },

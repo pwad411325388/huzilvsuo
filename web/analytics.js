@@ -1,3 +1,5 @@
+import { compareRecent, compareSalesSummary, compareSourceSummary } from './list-order.js';
+
 const distinct = values => new Set(values).size;
 export const isOngoing = record => ['已受理', '诉讼中'].includes(record.status);
 export const sourceLabel = record => record.brokerName || '自然流入';
@@ -10,7 +12,7 @@ export function caseRows(view) {
       customer: lead?.name || record.name || '未留资', phone: lead?.phone || '', stockName: lead?.stockName || '', stockCode: lead?.stockCode || '',
       companyId: lead?.companyId || '', company: lead?.companyName || '', broker: lead ? sourceLabel(lead) : '自然流入',
       handlerId: lead?.salesId || '', handler: lead?.salesName || '待分配', date: record.openedOn };
-  });
+  }).sort(compareRecent);
 }
 
 export function channelRows(view) {
@@ -22,7 +24,8 @@ export function channelRows(view) {
       status: broker.accountStatus === 'natural' ? '无券商归属' : broker.accountStatus === 'closed' ? '已注销' : broker.username ? '已开户' : '待开户',
       date: broker.signedOn, customers: distinct(leads.map(lead => lead.clientId)), leads: leads.length,
       ongoing: relatedCases.filter(isOngoing).length, closed: relatedCases.filter(record => record.status === '已结案').length };
-  });
+  }).sort((a, b) => compareSourceSummary({ ...a, sourceStatus: a.status === '无券商归属' ? 'active' : a.status },
+    { ...b, sourceStatus: b.status === '无券商归属' ? 'active' : b.status }));
 }
 
 export function salesRows(view) {
@@ -38,7 +41,7 @@ export function salesRows(view) {
       leads: leads.length, customers: distinct(leads.map(lead => lead.clientId)), pending: leads.filter(lead => lead.status === '待跟进').length,
       followed: leads.filter(lead => lead.status === '已跟进').length,
       ongoing: handled.filter(isOngoing).length, closed: handled.filter(record => record.status === '已结案').length };
-  });
+  }).sort(compareSalesSummary);
 }
 
 export function overview(view) {

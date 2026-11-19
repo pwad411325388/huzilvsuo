@@ -1,7 +1,7 @@
 const { request, showLogin, openProgress } = require('../../client');
 
 Page({
-  data: { draft: '', query: '', items: [], total: 0, offset: 0, limit: 20, loading: true, notice: '' },
+  data: { draft: '', query: '', items: [], total: 0, offset: 0, limit: 20, loading: true, notice: '', orderLabel: '' },
   onShow() {
     const token = getApp().globalData.token;
     if (!token) return showLogin();
@@ -21,7 +21,7 @@ Page({
       const result = await request('/registry?q=' + encodeURIComponent(query) + '&offset=' + offset);
       if (this.sequence !== sequence || this.sessionToken !== getApp().globalData.token) return;
       if (offset && offset >= result.total) return this.load(query, Math.max(0, Math.ceil(result.total / result.limit) - 1) * result.limit);
-      this.setData({ items: result.items, total: result.total, offset: result.offset, limit: result.limit });
+      this.setData({ items: result.items, total: result.total, offset: result.offset, limit: result.limit, orderLabel: result.orderLabel || '按材料登记日期从新到旧，缺少日期的记录在最后。' });
     } catch (error) {
       if (this.sequence !== sequence || this.sessionToken !== getApp().globalData.token) return;
       if (error.status === 401) return showLogin();
