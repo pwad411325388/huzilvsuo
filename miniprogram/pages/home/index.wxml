@@ -1,2 +1,2 @@
 <import src="../../ui.wxml" />
-<template is="screen" data="{{isHome, periods, period, signedOn, view, metric, ledger, ledgerRecords, assignedRecords, followFilter, busy, notice, phoneInvalid, salesBoard, boardSelected, boardPeriod, boardFrom, boardTo, boardMetric, boardLoading, boardError, boardDateError, boardPage, boardPages}}" />
+<template is="screen" data="{{recordList, isHome, periods, period, signedOn, cooperationFocused, view, metric, busy, notice, phoneInvalid, consultationStarted, consultationOpen, salesBoard, boardSelected, boardExpanded, boardPeriod, boardFrom, boardTo, boardMetric, boardDraft, boardQ, boardLedger, boardLoading, boardError, boardDateError, boardPage, boardPages}}" />

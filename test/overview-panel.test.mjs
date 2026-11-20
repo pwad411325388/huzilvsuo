@@ -7,7 +7,7 @@ const metricRows = [
   ['ongoing', '在办案件', 15, '件'], ['closed', '已结案件', 7, '件'], ['registry', '历史登记', 50, '条'], ['signed', '已签约档案', 2, '份'],
 ];
 const row = (title = '合成客户甲') => ({ id: 'record-1', number: 'DJ-000101', title, phone: '19900009991', stockName: '合成股票', stockCode: 'TST',
-  source: '合成来源', sales: '测试销售甲', registeredOn: '2026-11-18', followStatus: '未记录', caseStatus: '进度待核对', origin: 'registry' });
+  source: '合成来源', sales: '测试销售甲', registeredOn: '2026-11-18', assignmentStatus: '已关联', caseStatus: '进度待核对', origin: 'registry' });
 const result = (patch = {}) => ({
   period: 'all', from: '', to: '2026-11-19', today: '2026-11-19', metrics: metricRows.map(([key, label, value, unit]) => ({ key, label, value, unit })),
   selected: 'records', title: '留资与登记', total: 52, offset: 0, limit: 20, items: [row()],
@@ -15,6 +15,20 @@ const result = (patch = {}) => ({
   recent: [row()], notes: ['合成测试口径说明'], meta: { sourceName: '合成样表.xlsx', registryTotal: 50, systemRecordCount: 2, registryCount: 50 }, ...patch,
 });
 const filters = (patch = {}) => ({ period: 'all', from: '', to: '', draftFrom: '', draftTo: '', detail: false, metric: 'records', queue: '', q: '', searchDraft: '', offset: 0, ...patch });
+
+test('客户和已签约档案显示案件进度，签约入口不重复标注已签约', () => {
+  for (const metric of ['customers', 'signed']) {
+    const data = result({ selected: metric, items: [{ ...row(), status: metric === 'signed' ? '已签约' : '资料待核对', caseStatus: '判决待生效' }] });
+    const html = renderOverviewDetails(data, filters({ metric, detail: true }));
+    assert.match(html, /<th\b[^>]*>案件进度<\/th>/);
+    assert.match(html, /<td>判决待生效<\/td>/);
+    assert.doesNotMatch(html, /<small>已签约<\/small>/);
+    if (metric === 'customers') assert.match(html, /<small>资料待核对<\/small>/);
+  }
+  const html = renderOverviewDetails(result({ selected: 'signed', items: [{ ...row(), status: '已签约', caseStatus: '<img onerror=bad()>' }] }), filters({ metric: 'signed', detail: true }));
+  assert.doesNotMatch(html, /<img/);
+  assert.match(html, /&lt;img/);
+});
 
 test('总览提供8张历史和系统合并卡片及同期3个待处理队列，日期控件区别草稿与已应用范围', () => {
   const html = renderOverviewSummary(result());
@@ -27,7 +41,7 @@ test('总览提供8张历史和系统合并卡片及同期3个待处理队列，
   assert.match(controls, /自选日期：2025-01-01 至 2025-12-31/);
   assert.match(controls, /name="from" value="2026-01-01" max="2026-11-19"/);
   assert.match(controls, /data-period="all"/); assert.match(controls, /data-period="month"/);
-  assert.match(controls, /签约、结案不代表在所选期间发生/);
+  assert.doesNotMatch(controls, /测试阶段|含历史同步|签约、结案不代表在所选期间发生/);
 });
 
 test('明细保留客户股票电话来源销售日期及来源标签，检索数与范围总数分开且字段转义', () => {
@@ -37,6 +51,7 @@ test('明细保留客户股票电话来源销售日期及来源标签，检索�
   assert.match(html, /当前范围 52 条 · 检索结果 1 条/);
   assert.match(html, /19900009991/); assert.match(html, /合成股票/); assert.match(html, /DJ-000101/);
   assert.match(html, /历史登记/); assert.match(html, /2026-11-18/);
+  assert.match(html, /<td>已关联<\/td>/); assert.match(html, /进度待核对/); assert.doesNotMatch(html, /跟进/);
   assert.doesNotMatch(html, /<img|<script>/); assert.match(html, /&lt;img/);
   assert.match(html, /data-offset="20" disabled/);
   const summary = renderOverviewSummary({ ...data, meta: { sourceName: malicious }, recent: [row(malicious)] });

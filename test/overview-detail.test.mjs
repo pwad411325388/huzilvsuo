@@ -56,7 +56,7 @@ test('八项明细数量、名称和单位与总览完全一致，且只输出�
     assert.equal(detail.rows.length, total);
     assert.ok(detail.description.length > 0);
     const serialized = JSON.stringify(detail);
-    assert.doesNotMatch(serialized, /-internal|返佣|金额|奖励|password|rebate/);
+    assert.doesNotMatch(serialized, /-internal|返佣|金额|奖励|password|rebate|跟进/);
     for (const row of detail.rows) assert.deepEqual(Object.keys(row), detail.columns.map(column => column.key));
   }
   assert.throws(() => buildOverviewDetail(view, 8), /总览明细类型无效/);

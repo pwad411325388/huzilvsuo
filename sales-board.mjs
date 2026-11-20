@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { hasSigningEvidence as signed, classifyCase } from './data-semantics.mjs';
+import { createSigningEvidence } from './signing-evidence.mjs';
+import { createLeadSigningScope, currentRelatedCases, resolveCaseProgress, resolveLeadProgress } from './lead-progress.mjs';
+import { summarizeProgress } from './board-progress.mjs';
+import { recordDate as localDate } from './user-records.mjs';
 import { accountRank, compareRecent, compareSourceSummary, orderLabels } from './web/list-order.js';
 
-const pageSize = 20;
-const businessDate = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' });
 const key = value => createHash('sha256').update(value).digest('hex');
 const normalize = value => String(value || '').normalize('NFKC').trim().toLocaleLowerCase('zh-CN');
 const metricDefinitions = [
@@ -17,22 +18,11 @@ function validDate(value) {
   return Number.isFinite(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
 }
 
-function localDate(value) {
-  if (validDate(value)) return value;
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(value)) return '';
-  const parsed = new Date(value);
-  return Number.isFinite(parsed.valueOf()) ? businessDate.format(parsed) : '';
-}
-
 function personPair(name, phone) {
   const fullName = normalize(name), fullPhone = String(phone || '').normalize('NFKC').trim();
   if (!/^1\d{10}$/.test(fullPhone) || !fullName || /[*＊]/.test(fullName) ||
       /^(?:股民姓名待核对|待留资客户|未知|不详|未登记|无|待核对|[-—–/\s]+)$/.test(fullName)) return '';
   return JSON.stringify([fullName, fullPhone]);
-}
-
-function closed(record) {
-  return classifyCase({ ...record, rawStatus: record.status }).caseGroup === 'closed';
 }
 
 function stockSummary(members) {
@@ -46,7 +36,7 @@ function stockSummary(members) {
     }
   }
   return [Array.from(stocks.values()).slice(0, 8).join('、') + (stocks.size > 8 ? ` 等 ${stocks.size} 项股票` : ''),
-    `${records} 条登记`].filter(Boolean).join(' · ');
+    `${records} 条记录`].filter(Boolean).join(' · ');
 }
 
 // This read model joins only records already authorized to this salesperson.
@@ -61,6 +51,8 @@ export function createSalesBoard(db, { requireValue, transaction, today, caseCut
     requireValue(metricDefinitions.some(([name]) => name === selected), '看板分类无效');
     const offset = String(input.offset ?? '0');
     requireValue(/^\d+$/.test(offset) && Number.isSafeInteger(Number(offset)), '分页参数无效');
+    const limit = input.limit === undefined ? 20 : input.limit;
+    requireValue([5, 20, '5', '20'].includes(limit), '每页条数只能选择 5 或 20');
     let from = period === 'month' ? currentDay.slice(0, 7) + '-01' : '', to = currentDay;
     if (period === 'custom') {
       requireValue(validDate(input.from) && validDate(input.to), '请填写有效的起止日期');
@@ -68,10 +60,13 @@ export function createSalesBoard(db, { requireValue, transaction, today, caseCut
       requireValue(input.to <= currentDay, '结束日期不能晚于今天');
       from = input.from; to = input.to;
     }
-    return { period, selected, from, to, today: currentDay, offset: Number(offset), limit: pageSize };
+    return { period, selected, from, to, today: currentDay, offset: Number(offset), limit: Number(limit) };
   }
 
   function load(actor, currentDay) {
+    const signed = createSigningEvidence(db);
+    const signingScope = createLeadSigningScope(db);
+    const testing = all('PRAGMA table_info(company_record_progress)').some(row => row.name === 'testing') ? 'p.testing' : '0';
     const brokers = all(`SELECT b.id,b.name,b.signedOn,i.status AS accountStatus FROM brokers b
       LEFT JOIN identities i ON i.role='broker' AND i.subjectId=b.id WHERE b.salesId=?`, actor.id);
     const clients = all(`SELECT c.*,s.signedOn,i.subjectId AS identitySubjectId,b.name AS brokerName,bi.status AS brokerAccountStatus
@@ -84,13 +79,13 @@ export function createSalesBoard(db, { requireValue, transaction, today, caseCut
     const leads = all(`SELECT l.id,l.clientId,l.stockName,l.stockCode,l.createdAt,a.salesId,
       ${assignmentColumns.has('contactName') ? 'COALESCE(a.contactName,c.name)' : 'c.name'} AS customer,
       ${assignmentColumns.has('contactPhone') ? 'COALESCE(a.contactPhone,c.phone)' : 'c.phone'} AS phone,
-      p.stage AS progressStage,p.node AS progressNode,p.completed_nodes AS completedNodes
+      p.record_id AS hasSnapshot,p.stage AS progressStage,p.node AS progressNode,p.completed_nodes AS completedNodes,${testing} AS testing
       FROM leads l JOIN clients c ON c.id=l.clientId LEFT JOIN brokers b ON b.id=c.brokerId
       LEFT JOIN lead_assignments a ON a.leadId=l.id
       LEFT JOIN company_record_progress p ON p.kind='lead' AND p.record_id=l.id
       WHERE a.salesId=?`, actor.id);
     const cases = all(`SELECT k.*,l.clientId,l.stockName,l.stockCode,a.salesId,
-      p.record_id AS hasSnapshot,p.stage AS progressStage,p.node AS progressNode,p.completed_nodes AS completedNodes
+      p.record_id AS hasSnapshot,p.stage AS progressStage,p.node AS progressNode,p.completed_nodes AS completedNodes,${testing} AS testing
       FROM cases k JOIN leads l ON l.id=k.leadId JOIN clients c ON c.id=l.clientId
       LEFT JOIN brokers b ON b.id=c.brokerId LEFT JOIN lead_assignments a ON a.leadId=l.id
       LEFT JOIN company_record_progress p ON p.kind='case' AND p.record_id=k.id
@@ -99,7 +94,9 @@ export function createSalesBoard(db, { requireValue, transaction, today, caseCut
     const leadById = new Map(visibleLeads.map(row => [row.id, row]));
     const clientsById = new Map(clients.map(row => [row.id, row]));
     const casesByLead = new Map();
-    for (const row of cases.filter(row => leadById.has(row.leadId) && (!localDate(row.openedOn) || localDate(row.openedOn) <= currentDay))) {
+    const currentCases = currentRelatedCases(cases.filter(row => leadById.has(row.leadId)), currentDay);
+    const caseProgress = new Map(currentCases.map(row => [row.id, resolveCaseProgress({ ...row, rawStatus: row.status }, actor.role, currentDay)]));
+    for (const row of currentCases) {
       if (!casesByLead.has(row.leadId)) casesByLead.set(row.leadId, []);
       casesByLead.get(row.leadId).push(row);
     }
@@ -108,9 +105,13 @@ export function createSalesBoard(db, { requireValue, transaction, today, caseCut
     const people = visibleLeads.map(lead => {
       const client = clientsById.get(lead.clientId), ownCases = casesByLead.get(lead.id) || [];
       const signedOn = validDate(client.signedOn) && client.signedOn <= currentDay ? client.signedOn : '';
+      const progressRow = { ...lead, signedOn };
+      const progress = resolveLeadProgress({ ...progressRow, signingMatch: signingScope(progressRow, currentDay) },
+        ownCases.map(row => ({ ...row, rawStatus: row.status })), actor.role, currentDay);
       return { id: 'lead:' + lead.id, identity: client.identitySubjectId || '', local: true,
         clientId: client.id, name: lead.customer || '待留资客户', phone: lead.phone || '', registeredOn: localDate(lead.createdAt),
-        signed: !!signedOn || signed(lead) || ownCases.some(signed), signedOn,
+        signed: !!signedOn || signed('lead',lead.id,lead,currentDay) || ownCases.some(row=>signed('case',row.id,row,currentDay)), signedOn,
+        status: progress.status,
         stocks: [{ name: lead.stockName, code: lead.stockCode }], recordCount: 1,
         sources: [client.brokerName || '自然流入'], sourceType: '系统留资',
         formalSource: !!client.brokerId, sourceStatus: client.brokerAccountStatus || 'pending',
@@ -122,10 +123,11 @@ export function createSalesBoard(db, { requireValue, transaction, today, caseCut
       const columns = new Set(all('PRAGMA table_info(registry_entries)').map(row => row.name));
       const extra = name => columns.has(name) ? 'e.' + name : "''";
       registryRows = all(`SELECT e.entry_key AS entryKey,e.customer,e.phone,e.stock_name AS stockName,
-        e.stock_code AS stockCode,e.source,e.registered_on AS registeredOn,e.stage AS status,
+        e.stock_code AS stockCode,e.source,e.registered_on AS registeredOn,e.stage AS status,${extra('filed_on')} AS filedOn,
         investor.subjectId AS identitySubjectId,p.record_id AS hasSnapshot,
         COALESCE(p.stage,${extra('progress_stage')}) AS progressStage,
-        COALESCE(p.node,${extra('progress_node')}) AS progressNode,p.completed_nodes AS completedNodes
+        COALESCE(p.node,${extra('progress_node')}) AS progressNode,p.completed_nodes AS completedNodes,${testing} AS testing,
+        ${extra('progress_stage')} AS sourceProgressStage,${extra('progress_node')} AS sourceProgressNode
         FROM registry_entries e JOIN registry_links l ON l.type='sales' AND l.source_name=e.sales AND l.source_phone=''
         JOIN identities seller ON seller.id=l.identity_id AND seller.role='sales' AND seller.subjectId=? AND seller.status='active'
         LEFT JOIN registry_links il ON il.type='investor' AND il.source_name=e.customer AND il.source_phone=e.phone
@@ -134,23 +136,27 @@ export function createSalesBoard(db, { requireValue, transaction, today, caseCut
         .filter(row => !localDate(row.registeredOn) || localDate(row.registeredOn) <= currentDay);
       for (const row of registryRows) people.push({ id: 'registry:' + row.entryKey, identity: row.identitySubjectId || '',
         name: row.customer || '股民姓名待核对', phone: row.phone || '', registeredOn: localDate(row.registeredOn),
-        signed: signed(row), signedOn: '', stocks: [{ name: row.stockName, code: row.stockCode }], recordCount: 1,
+        signed: signed('registry',row.entryKey,row,currentDay), signedOn: '', stocks: [{ name: row.stockName, code: row.stockCode }], recordCount: 1,
+        status: resolveCaseProgress({ ...row, rawStatus: row.status }, actor.role, currentDay).status,
         sources: row.source?.trim() ? [row.source.trim()] : [], sourceType: '历史登记',
         progress: { kind: 'registry', progressId: key(row.entryKey) },
       });
     }
     const personByLead = new Map(people.filter(row => row.local).map(row => [row.id.slice(5), row]));
-    const closedCases = cases.filter(row => leadById.has(row.leadId) && closed(row) && localDate(row.openedOn) <= currentDay).map(row => {
+    const closedCases = currentCases.filter(row => caseProgress.get(row.id).caseGroup === 'closed').map(row => {
       const person = personByLead.get(row.leadId);
       return { id: 'case:' + row.id, title: person.name, phone: person.phone,
-        subtitle: row.title || row.stockName || row.stockCode || '案件', status: '已结案', registeredOn: person.registeredOn,
+        subtitle: row.title || row.stockName || row.stockCode || '案件', status: caseProgress.get(row.id).status, registeredOn: person.registeredOn,
         openedOn: localDate(row.openedOn), sourceType: '系统案件',
-        ...(row.salesId === actor.id && row.openedOn >= caseCutoff ? { kind: 'case', progressId: row.id } : {}),
+        ...(row.salesId === actor.id ? { kind: 'case', progressId: row.id } : {}),
       };
     });
-    for (const row of registryRows.filter(closed)) closedCases.push({ id: 'registry:' + key(row.entryKey), title: row.customer,
-      phone: row.phone || '', subtitle: [row.stockName, row.stockCode].filter(Boolean).join(' · '), status: '已结案',
-      registeredOn: localDate(row.registeredOn), sourceType: '历史登记', kind: 'registry', progressId: key(row.entryKey) });
+    for (const row of registryRows) {
+      const progress = resolveCaseProgress({ ...row, rawStatus: row.status }, actor.role, currentDay);
+      if (progress.caseGroup === 'closed') closedCases.push({ id: 'registry:' + key(row.entryKey), title: row.customer,
+        phone: row.phone || '', subtitle: [row.stockName, row.stockCode].filter(Boolean).join(' · '), status: progress.status,
+        registeredOn: localDate(row.registeredOn), sourceType: '历史登记', kind: 'registry', progressId: key(row.entryKey) });
+    }
     return { people, brokers, closedCases };
   }
 
@@ -191,7 +197,8 @@ export function createSalesBoard(db, { requireValue, transaction, today, caseCut
           const dates = subset.map(row => row.registeredOn).filter(Boolean).sort();
           const signedDates = current.map(row => row.signedOn).filter(Boolean).sort();
           return { id: key(groupKey), title: preferred.name, phone: preferred.phone,
-            subtitle: stockSummary(subset), status: statusKnown ? '已签约' : '签约状态未确认', registeredOn: dates.at(-1) || '',
+            subtitle: stockSummary(subset), status: summarizeProgress(subset.map(row => row.status)),
+            signingStatus: statusKnown ? '已签约' : '签约状态未确认', registeredOn: dates.at(-1) || '',
             signedOn: signedDates.at(-1) || '', recordCount: subset.reduce((n, row) => n + row.recordCount, 0),
             sourceType: [...new Set(subset.map(row => row.sourceType))].join('、'),
             ...(subset.length === 1 ? subset[0].progress : {}), unknownDate: subset.some(row => !row.registeredOn),
@@ -220,7 +227,7 @@ export function createSalesBoard(db, { requireValue, transaction, today, caseCut
         const sourceStatus = group.occurrences.filter(row => row.sourceStatus && priorOrUnknown(row.registeredOn))
           .map(row => row.sourceStatus).sort((a, b) => accountRank(a) - accountRank(b))[0] || 'active';
         const toCard = rows => ({ id: key('channel:' + channelKey), title: group.name,
-          subtitle: [...new Set(rows.map(row => row.sourceType))].join('、'),
+          subtitle: `${new Set(rows.map(row => row.customerKey).filter(Boolean)).size} 位客户 · ${rows.reduce((total, row) => total + row.recordCount, 0)} 条记录`,
           status: [...new Set(rows.map(row => row.status).filter(Boolean))].join('、'),
           registeredOn: rows.map(row => row.registeredOn).filter(Boolean).sort().at(-1) || '',
           sourceStatus, customerCount: new Set(rows.map(row => row.customerKey).filter(Boolean)).size,
@@ -232,27 +239,28 @@ export function createSalesBoard(db, { requireValue, transaction, today, caseCut
         const visible = group.occurrences.filter(row => included(row.registeredOn));
         if (visible.length) channels.push(toCard(visible));
       }
-      const collections = { channels, customers, effective: customers.filter(row => row.status === '已签约'),
+      const collections = { channels, customers, effective: customers.filter(row => row.signingStatus === '已签约'),
         closed: closedCases.filter(row => included(row.registeredOn)) };
-      const totals = { channels: allChannels, customers: allCustomers, effective: allCustomers.filter(row => row.status === '已签约'),
+      const totals = { channels: allChannels, customers: allCustomers, effective: allCustomers.filter(row => row.signingStatus === '已签约'),
         closed: closedCases.filter(row => priorOrUnknown(row.registeredOn)) };
       const metrics = metricDefinitions.map(([name, label, unit, kind]) => {
         const visibleIds = new Set(collections[name].map(row => row.id));
         return { key: name, label, unit, kind, value: collections[name].length,
-          dateLabel: name === 'channels' ? '合作 / 留资 / 材料登记日期' : '留资 / 材料登记日期',
+          dateLabel: name === 'channels' ? '合作 / 登记日期' : '登记日期',
           unknownDateCount: totals[name].filter(row => (row.unknownDate || !row.registeredOn) &&
             (filters.period === 'all' || !visibleIds.has(row.id))).length };
       });
       const items = collections[filters.selected].sort(filters.selected === 'channels' ? compareSourceSummary : compareRecent);
-      const notes = ['按留资 / 材料登记日期筛选；签约、结案显示当前状态，并非期间发生数。',
-        '客户与股票仅统计当前经办留资和已关联历史登记；转派给其他销售的股票、案件及其同步状态不再计入。',
-        '来源渠道包含合作券商与经办登记来源，同名来源合并；合作关系不代表可查看该渠道的其他经办记录。'];
+      const notes = ['按登记日期筛选，签约与结案显示所选记录的当前状态。',
+        '已签约包含历史记录中已立案及后续阶段的客户；同一客户多条股票记录合并计数，缺失的实际签约日期留空。',
+        '包含当前名下的客户和股票记录；转派后按最新归属查看。',
+        '来源渠道按名称汇总；仅展示你有权查看的客户与记录。'];
       if (uncertainCount) notes.push(`${uncertainCount} 条登记资料不完整，暂按独立档案计数，待核对。`);
-      if (missingSigningCount) notes.push(`${missingSigningCount} 条历史登记的签约状态待确认，未计入已签约客户。`);
+      if (missingSigningCount) notes.push(`${missingSigningCount} 条记录的签约状态待确认，未计入已签约客户。`);
       if (metrics.some(row => row.unknownDateCount)) notes.push('缺少登记日期的记录仅计入全部累计，不计入本月或自选日期。');
-      const lastPage = Math.max(0, Math.ceil(items.length / pageSize) - 1);
-      const offset = Math.min(Math.floor(filters.offset / pageSize), lastPage) * pageSize;
-      return { ...filters, offset, metrics, total: items.length, items: items.slice(offset, offset + pageSize), notes,
+      const lastPage = Math.max(0, Math.ceil(items.length / filters.limit) - 1);
+      const offset = Math.min(Math.floor(filters.offset / filters.limit), lastPage) * filters.limit;
+      return { ...filters, offset, metrics, total: items.length, items: items.slice(offset, offset + filters.limit), notes,
         orderLabel: filters.selected === 'channels' ? orderLabels.sources : orderLabels.recent };
     }, true);
   }

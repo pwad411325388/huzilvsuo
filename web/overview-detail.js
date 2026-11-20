@@ -1,11 +1,11 @@
-import { overview, caseRows, channelRows, isOngoing } from './analytics.js';
+import { overview, caseRows, channelRows, isOngoing, assignmentLabel } from './analytics.js';
 import { compareRecent, comparePending, compareSourceSummary, orderLabels } from './list-order.js';
 
 const PAGE_SIZE = 20;
 const columns = entries => entries.map(([key, label]) => ({ key, label }));
 const leadColumns = columns([
   ['number', '留资编号'], ['customer', '客户'], ['phone', '手机号'], ['stockName', '股票名称'], ['stockCode', '股票代码'],
-  ['company', '核对公司'], ['broker', '当前券商'], ['sales', '经办销售'], ['date', '留资日期'], ['status', '状态'], ['reason', '说明'],
+  ['company', '核对公司'], ['broker', '当前券商'], ['sales', '经办销售'], ['date', '留资日期'], ['status', '分配状态'], ['reason', '说明'],
 ]);
 const clientColumns = columns([
   ['customer', '客户'], ['phone', '手机号'], ['stocks', '股票线索'], ['firstBroker', '首次券商'], ['broker', '当前券商'],
@@ -25,7 +25,7 @@ function leadRow(lead) {
     number: /^LZ-\d+$/.test(lead.number || '') ? lead.number : readableNumber('LZ', lead.recordNumber),
     customer: lead.name || '未登记姓名', phone: lead.phone || '—', stockName: lead.stockName || '—', stockCode: lead.stockCode || '—',
     company: lead.companyName || '待核对', broker: lead.brokerName || '自然流入', sales: lead.salesName || '待分配',
-    date: lead.createdOn || '—', status: lead.status || (lead.needsAssignment ? '待分配' : '已分配'),
+    date: lead.createdOn || '—', status: assignmentLabel(lead),
     reason: lead.legacy && lead.needsAssignment ? `历史待核对${lead.reason ? `：${lead.reason}` : ''}` : lead.reason || '—',
   };
 }

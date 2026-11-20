@@ -1,5 +1,5 @@
-import { channelRows } from './analytics.js';
-import { compareAccounts, compareRecent, comparePending, compareName, orderLabels } from './list-order.js';
+import { channelRows, assignmentLabel } from './analytics.js';
+import { compareAccounts, compareRecent, comparePending, compareName } from './list-order.js';
 
 export function operationsPage(view, state, ui) {
   const { safe, button, field, select, panel, empty, tag } = ui;
@@ -7,11 +7,9 @@ export function operationsPage(view, state, ui) {
   const activeSales = orderedSales.filter(sales => sales.username && sales.accountStatus === 'active').map(sales => [sales.id, sales.name]);
   const table = (headings, rows) => rows.length ? `<div class="table-wrap"><table><thead><tr>${headings.map(title => `<th>${title}</th>`).join('')}</tr></thead>
     <tbody>${rows.map(cells => `<tr>${cells.map(cell => `<td>${cell}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : empty();
-  const history = rows => rows.length ? `<details class="history"><summary>查看 ${rows.length} 条跟进记录</summary>${rows.map(row =>
-    `<article class="admin-record"><strong>${safe(row.salesName || '历史销售')}</strong><p>${safe(row.note)}</p><small>${safe(new Date(row.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</small></article>`).join('')}</details>` : '<p>暂无跟进记录</p>';
-  const assignmentTable = rows => table(['留资编号 / 日期', '客户 / 股票', '来源渠道', '经办销售 / 状态', '说明', '操作'], rows.map(lead => [
+  const assignmentTable = rows => table(['留资编号 / 日期', '客户 / 股票', '来源渠道', '经办销售 / 分配状态', '说明', '操作'], rows.map(lead => [
     `${safe(lead.number)}<small>${safe(lead.createdOn)}</small>`, `${safe(lead.name)}<small>${safe(lead.phone)}</small><small>${safe(lead.stockName)} · ${safe(lead.stockCode)}</small>`,
-    safe(lead.brokerName || '自然流入'), `${safe(lead.salesName || '待分配')}<small>${tag(lead.status)}</small>`, safe(lead.reason),
+    safe(lead.brokerName || '自然流入'), `${safe(lead.salesName || '待分配')}<small>${tag(assignmentLabel(lead))}</small>`, safe(lead.reason),
     button(lead.salesId ? '核对 / 转派' : '核对并分配', 'edit-assignment', lead.id, 'class="secondary"'),
   ]));
 
@@ -29,9 +27,9 @@ export function operationsPage(view, state, ui) {
     const selected = view.brokers.find(row => row.id === state.editChannel);
     return '<div data-admin-data-host="channels" aria-busy="true"><section class="panel" role="status">正在加载全部来源渠道…</section></div>' +
       `<details class="panel"${selected || f.search || f.salesId ? ' open' : ''}><summary>券商账号与合作负责人维护</summary>` +
-      panel('小程序合作券商', `<p>这里只管理已登记的小程序合作券商。表格中的历史来源分类在上方查询，不代表已开通券商账号。券商推荐的新留资交给其绑定销售。</p>
+      panel('小程序合作券商', `<p>券商推荐的新留资交给其绑定销售。</p>
       <form data-form="channel-query" class="inline-form">${field('渠道名称', `<input name="search" value="${safe(f.search)}" maxlength="80">`)}
-      ${field('合作负责人', select('salesId', orderedSales.map(row => [row.id, row.name]), f.salesId, '全部销售'))}<button class="secondary">查询渠道</button></form><p class="muted" data-order-label>排序：${safe(orderLabels.sources)}</p>
+      ${field('合作负责人', select('salesId', orderedSales.map(row => [row.id, row.name]), f.salesId, '全部销售'))}<button class="secondary">查询渠道</button></form>
       ${table(['券商', '合作负责人', '账号状态', '合作签约日期', '操作'], rows.filter(row => row.id).map(row => [safe(row.name), safe(row.sales), safe(row.status), safe(row.date || '—'),
         button('管理负责人', 'edit-channel', row.id, 'class="quiet"')]))}`) +
       (selected ? panel(`调整合作负责人 · ${safe(selected.name)}`, `<form data-form="channel-owner" class="form-grid"><input type="hidden" name="brokerId" value="${safe(selected.id)}">
@@ -58,7 +56,6 @@ export function operationsPage(view, state, ui) {
     if (!a.needsAssignment) return compareRecent(a, b);
     return comparePending({ ...a, queue: a.legacy ? 'system_legacy' : 'system_new' }, { ...b, queue: b.legacy ? 'system_legacy' : 'system_new' });
   });
-  const assignmentOrder = f.queue === 'assigned' ? orderLabels.recent : f.queue === 'all' ? '新待分配、历史待核对在前，各组旧到新；已分配记录在后，按新到旧。缺日期在各组最后。' : orderLabels.oldest;
   const companies = view.companies.slice().sort((a, b) => Number(b.active) - Number(a.active) || String(a.stockCode || '').localeCompare(String(b.stockCode || ''), 'en', { numeric: true }) || compareName(a, b));
   const company = view.companies.find(row => row.id === state.editCompany);
   const target = view.assignments.find(row => row.id === state.editAssignment);
@@ -75,13 +72,12 @@ export function operationsPage(view, state, ui) {
     <input type="hidden" name="leadId" value="${safe(target.id)}"><input type="hidden" name="version" value="${target.version}">
     ${field(target.brokerId ? '核对后的公司（选填）' : '核对后的公司', select('companyId', view.companies.filter(item => item.active).map(item => [item.id, `${item.name} · ${item.stockCode}`]), target.companyId, target.brokerId ? '保留现有公司资料' : '请选择公司'))}
     ${field('经办销售', select('salesId', activeSales, target.salesId, '请选择销售'))}${field('核对 / 转派说明', '<input name="reason" maxlength="200" required>')}
-    <button class="primary">确认分配</button></form>${history(target.followups)}${button('取消', 'edit-assignment', '', 'class="quiet"')}`) : '';
-  return panel('留资分配', `<p>本页分派操作针对小程序留资。历史登记的销售关联可在律所登记台账核对，全部历史客户可在客户档案中查看。</p><div class="filters">${button('查看全部客户档案', 'all-client-data', '', 'class="secondary"')}${button('打开律所登记台账', 'admin-tab', 9, 'class="secondary"')}</div><p>券商推荐的留资交给该券商绑定的销售，自然流入的留资按股票公司派单。缺少可用经办人时进入待分配。</p>
+    <button class="primary">确认分配</button></form>${button('取消', 'edit-assignment', '', 'class="quiet"')}`) : '';
+  return panel('留资分配', `<p>此处分派小程序留资；登记表客户请到律所登记台账关联销售。</p><div class="filters">${button('查看全部客户档案', 'all-client-data', '', 'class="secondary"')}${button('打开律所登记台账', 'admin-tab', 9, 'class="secondary"')}</div>
     <form data-form="assignment-query" class="form-grid query-grid">${field('队列', select('queue', [['pending', '新留资待分配'], ['legacy', '历史待核对'], ['assigned', '已分配'], ['all', '全部留资']], f.queue || 'pending'))}
     ${field('经办销售', select('salesId', orderedSales.map(item => [item.id, item.name]), f.salesId, '全部销售'))}
     ${field('客户 / 股票 / 编号', `<input name="search" maxlength="100" value="${safe(f.search)}">`)}<button class="secondary">查询留资</button></form>
-    <p>共 ${rows.length} 条</p><p class="muted" data-order-label>排序：${safe(assignmentOrder)}</p>${assignmentTable(rows)}`) + assignmentEditor + companyForm +
-    panel('公司配置', '<p class="muted" data-order-label>排序：启用在前，已停用在后；同组按股票代码、名称排序。</p>' + table(['公司', '代码', '别名', '负责销售', '状态', '操作'], companies.map(item => [safe(item.name), safe(item.stockCode), `<span class="wrap-cell">${safe(item.aliases || '—')}</span>`,
-      safe(item.salesName || '未配置'), item.active ? (item.salesId && item.salesStatus === 'active' ? '启用' : '待配置可用销售') : '已停用', button('修改配置', 'edit-company', item.id, 'class="secondary"')]))) +
-    (view.legacyFollowups.length ? panel('历史客户跟进', `<p>这些记录原来只关联客户，尚未确认对应哪条留资，保留原记录供核对。</p>${view.legacyFollowups.map(row => `<article class="admin-record"><strong>${safe(row.name)} · ${safe(row.salesName || '历史销售')}</strong><p>${safe(row.note)}</p></article>`).join('')}`) : '');
+    <p>共 ${rows.length} 条</p>${assignmentTable(rows)}`) + assignmentEditor + companyForm +
+    panel('公司配置', table(['公司', '代码', '别名', '负责销售', '状态', '操作'], companies.map(item => [safe(item.name), safe(item.stockCode), `<span class="wrap-cell">${safe(item.aliases || '—')}</span>`,
+      safe(item.salesName || '未配置'), item.active ? (item.salesId && item.salesStatus === 'active' ? '启用' : '待配置可用销售') : '已停用', button('修改配置', 'edit-company', item.id, 'class="secondary"')])));
 }

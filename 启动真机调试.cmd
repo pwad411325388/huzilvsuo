@@ -1,0 +1,9 @@
+@echo off
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start_local.ps1" -Lan
+if errorlevel 1 (
+  echo.
+  pause
+  exit /b 1
+)
+echo.
+pause

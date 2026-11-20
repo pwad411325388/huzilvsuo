@@ -84,7 +84,7 @@ test('导入、关联、转派和快照同步贯穿后台报表及使用端，�
 
   // One real workbook importer, one database, every reader observes the same snapshot.
   await call('/admin/registry/sync', null, {});
-  const imported = await assertReportTotals({ records: 8, customers: 6, channels: 2, pending: 8, ongoing: 2, closed: 1, registry: 8, signed: 0 });
+  const imported = await assertReportTotals({ records: 8, customers: 6, channels: 2, pending: 8, ongoing: 2, closed: 1, registry: 8, signed: 2 });
   const keys = db.prepare('SELECT entry_key FROM registry_entries ORDER BY source_row').all();
   await call('/admin/registry/sync', null, {});
   assert.deepEqual(values(await board()), imported); assert.deepEqual(db.prepare('SELECT entry_key FROM registry_entries ORDER BY source_row').all(), keys);
@@ -119,8 +119,8 @@ test('导入、关联、转派和快照同步贯穿后台报表及使用端，�
   await link('sales', '000001', identityA);
   store.syncProgress([{ kind: 'registry', id: entry('000002'), revision: 1, stage: 'closure', node: 'closed' },
     { kind: 'registry', id: entry('000003'), revision: 1, stage: 'intake', node: 'signed' }]);
-  await assertReportTotals({ ongoing: 1, closed: 2, signed: 1, pending: 1 });
-  assert.equal((await sales(a, 'closed')).total, 2); assert.equal((await sales(a, 'effective')).total, 1);
+  await assertReportTotals({ ongoing: 1, closed: 2, signed: 3, pending: 1 });
+  assert.equal((await sales(a, 'closed')).total, 2); assert.equal((await sales(a, 'effective')).total, 2);
   assert.equal((await call(progressPath, a.token)).current.label, '已结案');
   assert.equal((await call(progressPath, investor.token)).current.label, '已结案');
   for (const person of [a, investor]) {
@@ -134,7 +134,7 @@ test('导入、关联、转派和快照同步贯穿后台报表及使用端，�
   assert.equal(administratorRecord.stage, '已结案'); assert.equal(administratorRecord.rawStage, '一审待开庭');
   await call('/progress?' + new URLSearchParams({ kind: 'registry', id: publicKey(entry('000003')) }), investor.token, undefined, 404);
   await call('/admin/registry/sync', null, {});
-  await assertReportTotals({ records: 8, customers: 6, ongoing: 1, closed: 2, signed: 1, pending: 1 });
+  await assertReportTotals({ records: 8, customers: 6, ongoing: 1, closed: 2, signed: 3, pending: 1 });
   store.syncProgress([{ kind: 'registry', id: entry('000002'), revision: 2, stage: null, node: null }]);
   for (const person of [a, investor]) {
     assert.equal((await registry(person)).items.find(row => row.stockCode === '000002').stage, '进度待核对');
@@ -143,9 +143,9 @@ test('导入、关联、转派和快照同步贯穿后台报表及使用端，�
   }
   assert.deepEqual((await call('/view', a.token)).registryPreview.map(previewFields), (await registry(a)).items.slice(0, 3).map(previewFields));
   assert.equal((await call('/view', a.token)).registryPreview.find(row => row.stockCode === '000002').stage, '进度待核对');
-  await assertReportTotals({ ongoing: 1, closed: 1, signed: 1 });
+  await assertReportTotals({ ongoing: 1, closed: 1, signed: 3 });
   store.syncProgress([{ kind: 'registry', id: entry('000002'), revision: 3, stage: 'closure', node: 'closed' }]);
-  t.diagnostic('换销售后旧销售清零并失去详情权限；解绑待关联升至 6，重新关联及快照更新后在办 1 / 结案 2 / 签约 1，重导入仍一致。');
+  t.diagnostic('换销售后旧销售清零并失去详情权限；解绑待关联升至 6，重新关联及快照更新后在办 1 / 结案 2 / 签约 3，重导入仍一致。');
 
   // A live case's current company snapshot must also reach every legacy/current list.
   const brokerId = store.registerBroker(a.actor, { name: '合成测试券商', signedOn: today() }).id;
@@ -181,6 +181,23 @@ test('导入、关联、转派和快照同步贯穿后台报表及使用端，�
   assert.equal((await call('/view', investor.token)).leads.find(row => row.id === leadId).cases[0].status, '进度待核对');
   assert.equal((await call('/view', b.token)).assignedLeads.find(row => row.id === leadId).cases[0].status, '进度待核对');
   assert.equal((await report({ type: 'cases', q: '实时股票' })).items[0].caseStatus, '进度待核对');
-  assert.equal((await call('/broker/board?metric=closed', broker.token)).total, 0);
+  const expectedClosed = ['000001', '000002'].map(stock => 'registry:' + publicKey(entry(stock))).sort();
+  const brokerClosed = await call('/broker/board?metric=closed', broker.token);
+  assert.equal(brokerClosed.total, 2, '清空的是实时案件，客户明确关联的两条已结案股票仍可见');
+  assert.deepEqual(brokerClosed.items.map(row => row.id).sort(), expectedClosed);
+  assert.ok(brokerClosed.items.every(row => row.id !== caseId));
   assert.equal((await sales(b, 'closed')).total, 0);
+  const unified = () => call('/records', broker.token);
+  assert.equal((await unified()).total, 4, '同一客户的三条登记及一条新股票在同一入口可见');
+  await link('investor', '000001', null);
+  assert.equal((await unified()).total, 1);
+  assert.equal((await call('/broker/board?metric=closed', broker.token)).total, 0);
+  await link('investor', '000001', investorId);
+  assert.equal((await unified()).total, 4);
+  assert.deepEqual((await call('/broker/board?metric=closed', broker.token)).items.map(row => row.id).sort(), expectedClosed);
+  db.prepare('UPDATE clients SET brokerId=NULL WHERE id=?').run(investor.actor.id);
+  assert.equal((await unified()).total, 0, '客户不再归属券商，所有关联股票即时不可见');
+  assert.equal((await call('/broker/board?metric=customers', broker.token)).total, 0);
+  assert.equal((await call('/broker/board?metric=closed', broker.token)).total, 0);
+  assert.equal((await call('/records', investor.token)).total, 4, '股民仍可见自己的记录');
 });

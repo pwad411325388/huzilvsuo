@@ -1,40 +1,60 @@
 const { request, showLogin, capturePromos, openProgress } = require('./client');
 const salesBoard = require('./sales-board');
+const userRecords = require('./user-records');
 const periods = ['2020 年之前', '2020–2022 年', '2022–2024 年', '2024 年至今'];
 const actions = {
   lead: ['/leads', '留资已提交'], cooperation: ['/cooperations', '已保存签约绑定'],
-  followup: ['/followups', '已保存跟进记录'], name: ['/profile/name', '已保存显示名称'],
+  name: ['/profile/name', '已保存显示名称'],
 };
 
-function makePage(isHome) {
+function makePage(isHome, isRecordsPage = false) {
   return {
-    data: { ...salesBoard.state(), isHome, periods, period: '', signedOn: '', view: null, metric: 0, ledger: '洽谈中',
-      ledgerRecords: [], assignedRecords: [], followFilter: '待跟进', editingName: false, busy: false, notice: '', phoneInvalid: false, security: false, recoveryCode: '' },
+    data: { ...salesBoard.state(), recordList: userRecords.state(!isHome), isHome, isRecordsPage, periods, period: '', signedOn: '', view: null, metric: 0,
+      editingName: false, consultationOpen: false, consultationStarted: false, busy: false, notice: '', phoneInvalid: false, security: false, recoveryCode: '' },
     ...salesBoard.methods,
+    ...userRecords.methods,
     onHide() {
       this.boardVisible = false;
+      this.recordsVisible = false;
+      this.recordsSequence = (this.recordsSequence || 0) + 1;
+      this.updateRecords({ data: null, loading: false });
       this.boardSequence = (this.boardSequence || 0) + 1;
       this.viewSequence = (this.viewSequence || 0) + 1;
       this.workSequence = (this.workSequence || 0) + 1;
       this.setData({ busy: false, security: false, recoveryCode: '', salesBoard: null, boardLoading: false });
     },
-    onLoad(query) { getApp().capturePromo(query); },
+    onLoad(query = {}) {
+      if (!isRecordsPage) getApp().capturePromo?.(query);
+      else {
+        this.initialRecords = { ...userRecords.state(), customerId: query.customerId || '', signingCustomer: query.signingCustomer === '1' && !!query.customerId };
+        if (query.presentation === 'home') this.initialRecords.presentation = 'home';
+        if (['all', 'month', 'custom'].includes(query.period)) this.initialRecords.period = query.period;
+        if (query.period === 'custom') Object.assign(this.initialRecords, { from: query.from || '', to: query.to || '', rangeFrom: query.from || '', rangeTo: query.to || '' });
+      }
+    },
+    onUnload() { this.onHide(); },
+    onTabItemTap() {
+      if (isHome && this.data.view?.actor.role === 'sales' && this.data.recordList.expanded) {
+        this.updateRecords({ expanded: false });
+      }
+    },
     onShow() {
       this.boardVisible = true;
+      this.recordsVisible = true;
       const token = getApp().globalData.token;
       if (!token) return this.returnToLogin();
       if (this.visibleToken !== token) {
         this.workSequence = (this.workSequence || 0) + 1;
         this.boardSequence = (this.boardSequence || 0) + 1;
         this.boardToken = '';
-        this.setData({ ...salesBoard.state(), view: null, busy: false, security: false, recoveryCode: '' });
+        const recordList = !this.visibleToken && this.initialRecords ? this.initialRecords : userRecords.state(!isHome);
+        this.recordsSequence = (this.recordsSequence || 0) + 1;
+        this.setData({ ...salesBoard.state(), recordList, view: null, busy: false, consultationOpen: false, consultationStarted: false, phoneInvalid: false, period: '', security: false, recoveryCode: '' });
         this.visibleToken = token;
       }
       return this.once(async () => {
         const snapshot = await this.fetchView();
-        if (snapshot?.actor.role === 'investor' && await capturePromos()) {
-          this.setData({ notice: '已记录首次推广来源' });
-        }
+        if (!isRecordsPage && snapshot?.actor.role === 'investor') await capturePromos();
       });
     },
     returnToLogin() {
@@ -42,8 +62,9 @@ function makePage(isHome) {
       this.viewSequence = (this.viewSequence || 0) + 1;
       this.boardSequence = (this.boardSequence || 0) + 1;
       this.boardToken = '';
-      this.setData(salesBoard.state());
-      this.setData({ view: null, busy: false, editingName: false, ledgerRecords: [], assignedRecords: [], followFilter: '待跟进', notice: '', security: false, recoveryCode: '' });
+      this.recordsSequence = (this.recordsSequence || 0) + 1;
+      this.setData({ ...salesBoard.state(), recordList: userRecords.state(!isHome) });
+      this.setData({ view: null, busy: false, editingName: false, consultationOpen: false, consultationStarted: false, phoneInvalid: false, period: '', notice: '', security: false, recoveryCode: '' });
       showLogin();
     },
     async once(work) {
@@ -74,12 +95,16 @@ function makePage(isHome) {
         throw error;
       }
       const sameActor = this.data.view?.actor.id === snapshot.actor.id && this.data.view?.actor.role === snapshot.actor.role;
-      const ledger = sameActor ? this.data.ledger : '洽谈中';
-      const followFilter = sameActor ? this.data.followFilter : '待跟进';
-      this.setData({ view: snapshot, signedOn: this.data.signedOn || snapshot.today, metric: sameActor ? this.data.metric : 0,
-        ledger, ledgerRecords: (snapshot.ledger || []).filter(item => item.status === ledger), followFilter,
-        assignedRecords: (snapshot.assignedLeads || []).filter(item => !followFilter || item.status === followFilter) });
-      if (snapshot.actor.role === 'broker' || (snapshot.actor.role === 'sales' && !isHome)) await this.loadSalesBoard();
+      if (isRecordsPage && !sameActor) {
+        const title = snapshot.actor.role !== 'investor' ? '客户与股票记录'
+          : this.data.recordList.presentation === 'home' ? '全部记录' : '我的股票登记';
+        wx.setNavigationBarTitle?.({ title });
+      }
+      // Broker lists load through the paginated board and record endpoints.
+      const view = snapshot.actor.role === 'broker' ? { actor: snapshot.actor, broker: snapshot.broker, today: snapshot.today } : snapshot;
+      this.setData({ view, signedOn: this.data.signedOn || snapshot.today, metric: sameActor ? this.data.metric : 0 });
+      if (!isRecordsPage && (snapshot.actor.role === 'broker' && isHome || snapshot.actor.role === 'sales' && !isHome)) await this.loadSalesBoard();
+      if (isRecordsPage || snapshot.actor.role === 'sales' && isHome || snapshot.actor.role === 'investor' && !isHome) await this.loadRecords();
       return snapshot;
     },
     logout() {
@@ -89,6 +114,7 @@ function makePage(isHome) {
       });
     },
     toggleName() { this.setData({ editingName: !this.data.editingName, notice: '' }); },
+    toggleConsultation() { this.setData({ consultationStarted: true, consultationOpen: !this.data.consultationOpen }); },
     toggleSecurity() { this.setData({ security: !this.data.security, recoveryCode: '', notice: '' }); },
     copyRecoveryCode() { if (this.data.recoveryCode) wx.setClipboardData({ data: this.data.recoveryCode }); },
     submitSecurity(event) {
@@ -115,20 +141,15 @@ function makePage(isHome) {
       if (this.data.phoneInvalid) this.setData({ phoneInvalid: false });
     },
     pickMetric(event) { this.setData({ metric: Number(event.currentTarget.dataset.index) }); },
-    pickFollow(event) {
-      const followFilter = event.currentTarget.dataset.status;
-      this.setData({ followFilter, assignedRecords: this.data.view.assignedLeads.filter(item => !followFilter || item.status === followFilter) });
-    },
-    pickLedger(event) {
-      const ledger = event.currentTarget.dataset.status;
-      if (!['洽谈中', '已签约'].includes(ledger)) return;
-      this.setData({ ledger, boardOffset: 0 });
-      return this.loadSalesBoard(0);
-    },
     openProgress,
-    copyCode() { wx.setClipboardData({ data: this.data.view.broker.code }); },
+    copyCode() {
+      const code = this.data.view?.broker?.code;
+      if (code) wx.setClipboardData({ data: code });
+    },
     submit(event) {
-      const { type, id, version } = event.currentTarget.dataset;
+      const { type } = event.currentTarget.dataset;
+      const action = actions[type];
+      if (!Array.isArray(action)) return;
       const input = event.detail.value;
       if (type === 'lead') {
         input.phone = String(input.phone ?? '').trim();
@@ -140,12 +161,14 @@ function makePage(isHome) {
         input.consent = Array.isArray(input.consent) && input.consent.length > 0;
       }
       if (type === 'cooperation') input.signedOn = this.data.signedOn;
-      if (type === 'followup') { input.leadId = id; input.version = version; }
       return this.once(async () => {
-        const [path, notice] = actions[type];
+        const [path, notice] = action;
         await request(path, input);
         await this.fetchView();
-        if (type === 'lead') wx.switchTab({ url: '/pages/mine/index' });
+        if (type === 'lead') {
+          this.setData({ consultationOpen: false, consultationStarted: false, period: '', phoneInvalid: false });
+          wx.switchTab({ url: '/pages/mine/index' });
+        }
         if (type === 'name') this.setData({ editingName: false });
         this.setData({ notice });
       });

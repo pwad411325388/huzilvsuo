@@ -5,42 +5,40 @@ import { businessBoardScope, businessBoardMatches, businessBoardParams, business
 const broker = { id: 'broker-a', role: 'broker' }, sales = { id: 'sales-a', role: 'sales' };
 const board = { period: 'custom', metric: 'signings', rangeFrom: '2025-01-01', rangeTo: '2025-12-31', offset: 20, from: '2026-01-01', to: '2026-11-01' };
 
-test('券商首页保留指标看板，我的强制客户台账和洽谈或签约筛选', () => {
-  const home = businessBoardScope(broker, 'home', '已签约');
-  assert.deepEqual(businessBoardParams(board, home), { period: 'custom', metric: 'signings', offset: 20, from: '2025-01-01', to: '2025-12-31' });
+test('券商首页合并客户查询和概览，我的及股票下钻页不请求看板', () => {
+  const home = businessBoardScope(broker, 'home');
+  assert.deepEqual(businessBoardParams({ ...board, metric: 'effective', q: '客户甲' }, home), { period: 'custom', metric: 'effective', offset: 20, limit: 5, from: '2025-01-01', to: '2025-12-31', ledger: 'all', q: '客户甲' });
   assert.equal(businessBoardPresentation(home).showMetrics, true);
-  for (const [label, ledger] of [['洽谈中', 'negotiating'], ['已签约', 'signed']]) {
-    const mine = businessBoardScope(broker, 'mine', label);
-    assert.deepEqual(businessBoardParams(board, mine), { period: 'custom', metric: 'customers', offset: 20, from: '2025-01-01', to: '2025-12-31', ledger });
-    assert.equal(businessBoardPresentation(mine).title, '客户台账');
-    assert.equal(businessBoardPresentation(mine).showMetrics, false);
-    assert.equal(businessBoardPresentation(mine).showLedger, true);
-  }
+  assert.equal(businessBoardPresentation(home).title, '渠道概览');
+  assert.equal(businessBoardScope(broker, 'mine'), null);
+  assert.equal(businessBoardScope(broker, 'records'), null);
 });
 
-test('台账状态及分页沿用已应用期间，首页不带台账筛选，日期草稿不会偷偷生效', () => {
-  const mine = businessBoardScope(broker, 'mine', '已签约');
-  const next = businessBoardParams(board, mine, 40);
-  assert.equal(next.offset, 40); assert.equal(next.ledger, 'signed'); assert.equal(next.from, board.rangeFrom);
-  const month = businessBoardParams({ ...board, period: 'month' }, mine, 0);
-  assert.deepEqual(month, { period: 'month', metric: 'customers', offset: 0, ledger: 'signed' });
-  const home = businessBoardParams(board, businessBoardScope(broker, 'home', '已签约'), 0);
-  assert.equal(home.ledger, undefined); assert.equal(home.from, '2025-01-01');
+test('首页查询及分页沿用已应用期间、搜索和洽谈筛选，未提交草稿不生效', () => {
+  const home = businessBoardScope(broker, 'home', 'negotiating');
+  const draft = { ...board, metric: 'customers', q: '股票甲', searchDraft: '尚未提交' };
+  const next = businessBoardParams(draft, home, 5);
+  assert.equal(next.offset, 5); assert.equal(next.ledger, 'negotiating'); assert.equal(next.from, board.rangeFrom);
+  assert.equal(next.q, '股票甲');
+  assert.equal(businessBoardPresentation(home).label, '洽谈中客户');
+  const month = businessBoardParams({ ...draft, period: 'month' }, home, 0);
+  assert.deepEqual(month, { period: 'month', metric: 'customers', offset: 0, limit: 5, ledger: 'negotiating', q: '股票甲' });
 });
 
 test('迟到回包必须同时属于当前账号、角色、页面和台账状态', () => {
-  const requestScope = businessBoardScope(broker, 'mine', '洽谈中');
-  assert.equal(businessBoardMatches(requestScope, broker, 'mine', '洽谈中'), true);
-  assert.equal(businessBoardMatches(requestScope, broker, 'home', '洽谈中'), false);
-  assert.equal(businessBoardMatches(requestScope, broker, 'mine', '已签约'), false);
-  assert.equal(businessBoardMatches(requestScope, { ...broker, id: 'broker-b' }, 'mine', '洽谈中'), false);
-  assert.equal(businessBoardMatches(requestScope, { ...broker, role: 'sales' }, 'mine', '洽谈中'), false);
-  assert.equal(businessBoardMatches(requestScope, null, 'mine', '洽谈中'), false);
+  const requestScope = businessBoardScope(broker, 'home', 'negotiating');
+  assert.equal(businessBoardMatches(requestScope, broker, 'home', 'negotiating'), true);
+  assert.equal(businessBoardMatches(requestScope, broker, 'mine', 'negotiating'), false);
+  assert.equal(businessBoardMatches(requestScope, broker, 'home', 'all'), false);
+  assert.equal(businessBoardMatches(requestScope, { ...broker, id: 'broker-b' }, 'home', 'negotiating'), false);
+  assert.equal(businessBoardMatches(requestScope, { ...broker, role: 'sales' }, 'home', 'negotiating'), false);
+  assert.equal(businessBoardMatches(requestScope, null, 'home', 'negotiating'), false);
 });
 
 test('销售我的保留原统计和登记明细入口，非业务账号及销售首页不请求看板', () => {
   const scope = businessBoardScope(sales, 'mine', '已签约');
   assert.equal(businessBoardParams({ ...board, metric: 'customers' }, scope).ledger, undefined);
+  assert.equal(businessBoardParams({ ...board, q: '券商搜索' }, scope).q, undefined);
   assert.equal(businessBoardPresentation(scope).showMetrics, true);
   assert.equal(businessBoardPresentation(scope).showSalesGuide, true);
   assert.equal(businessBoardPresentation(businessBoardScope(broker, 'mine')).showSalesGuide, false);

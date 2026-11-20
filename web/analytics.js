@@ -1,8 +1,14 @@
 import { compareRecent, compareSalesSummary, compareSourceSummary } from './list-order.js';
 
 const distinct = values => new Set(values).size;
-export const isOngoing = record => ['已受理', '诉讼中'].includes(record.status);
+export const isOngoing = record => record.caseGroup ? record.caseGroup === 'ongoing' : ['已受理', '诉讼中'].includes(record.status);
 export const sourceLabel = record => record.brokerName || '自然流入';
+
+export function assignmentLabel(lead) {
+  if (lead.assignmentStatus) return lead.assignmentStatus;
+  const needsAssignment = lead.needsAssignment ?? !lead.salesId;
+  return needsAssignment ? '待分配' : '已分配';
+}
 
 export function caseRows(view) {
   const byLead = new Map(view.assignments.map(lead => [lead.id, lead]));
@@ -38,8 +44,7 @@ export function salesRows(view) {
     return { id: sales.id, name: sales.name, status: sales.accountStatus === 'closed' ? '已注销' : sales.username ? '正常' : '待开户',
       channels: owned.length, channelNames: owned.map(channel => `${channel.name}（${channel.customers} 人）`).join('、'),
       channelCustomers: owned.reduce((sum, channel) => sum + channel.customers, 0),
-      leads: leads.length, customers: distinct(leads.map(lead => lead.clientId)), pending: leads.filter(lead => lead.status === '待跟进').length,
-      followed: leads.filter(lead => lead.status === '已跟进').length,
+      leads: leads.length, customers: distinct(leads.map(lead => lead.clientId)),
       ongoing: handled.filter(isOngoing).length, closed: handled.filter(record => record.status === '已结案').length };
   }).sort(compareSalesSummary);
 }

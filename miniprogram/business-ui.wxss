@@ -1,0 +1,36 @@
+.business-intro { margin: 8rpx 5rpx 28rpx; }
+.business-greeting { color: #735957; font-size: 26rpx; overflow-wrap: anywhere; }
+.business-title { margin: 6rpx 0 0; color: #402d30; font-family: "Songti SC", SimSun, serif; font-size: 52rpx; line-height: 1.25; font-weight: 700; }
+.business-section-head, .business-account-head, .business-search, .promo-actions { display: flex; align-items: center; gap: 14rpx; }
+.business-section-head { justify-content: space-between; margin-bottom: 15rpx; }
+.business-section-head .heading, .business-account-head .heading { margin: 0; }
+.business-total { color: #78545b; font-size: 24rpx; white-space: nowrap; }
+.business-account-head { align-items: flex-start; }
+.business-account-id { min-width: 0; flex: 1; }
+.business-account-id .muted { margin-top: 4rpx; }
+.business-avatar { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4rpx; width: 78rpx; height: 78rpx; flex: none; border-radius: 24rpx; background: #f2e3df; }
+.portrait-head, .portrait-body { box-sizing: border-box; border: 3rpx solid var(--wine); }
+.portrait-head { width: 19rpx; height: 19rpx; border-radius: 50%; }
+.portrait-body { width: 38rpx; height: 18rpx; border-radius: 24rpx 24rpx 6rpx 6rpx; }
+.business-account-actions { display: flex; flex-wrap: wrap; border-top: 1rpx solid #e6dbd0; margin-top: 18rpx; }
+.business-inline, .business-reset { min-height: 84rpx; margin: 0; padding: 12rpx 8rpx; border: none; border-radius: 0; background: transparent; color: var(--wine); font-size: 25rpx; line-height: 1.45; display: flex; align-items: center; justify-content: center; }
+.business-inline { flex: auto; }
+.business-inline[disabled] { color: #8c8581; background: transparent; }
+.business-search { margin: 0 0 16rpx; gap: 8rpx; }
+.business-search input { flex: 1; min-width: 0; margin: 0; }
+.business-search .secondary, .business-reset { flex: none; margin: 0; }
+.business-period { flex-wrap: nowrap; gap: 4rpx; padding: 4rpx; background: #f4ece5; border-radius: 19rpx; }
+.business-period .chip { flex: 1; min-width: 0; margin: 0; min-height: 82rpx; padding: 12rpx 4rpx; color: #705e5a; background: transparent; border: 1rpx solid transparent; border-radius: 15rpx; }
+.business-period .chip.selected { color: var(--wine); background: #fffaf5; border-color: #ddc8bf; }
+.broker-filters { border-top: 1rpx solid #e6dbd0; padding-top: 20rpx; margin-top: 20rpx; }
+.promo-preview { margin: 0 auto 24rpx; text-align: center; }
+.promo-preview-image { display: block; width: 360rpx; max-width: 100%; height: 360rpx; margin: 0 auto 10rpx; background: #fff; }
+.promo-code { display: block; margin: 6rpx 0 20rpx; color: var(--wine); font-size: 35rpx; font-weight: 650; word-break: break-all; }
+.promo-actions { flex-wrap: wrap; }
+.promo-actions .secondary { flex: 1 1 auto; margin: 0; }
+.business-detail-head { margin-top: 24rpx; }
+.business-record { padding: 20rpx; }
+.business-record .line { align-items: flex-start; }
+.business-record .line .strong { flex: 1; min-width: 0; }
+.business-record .tag { max-width: 42%; white-space: normal; overflow-wrap: anywhere; }
+.business-menu { display: flex; justify-content: space-between; align-items: center; text-align: left; min-height: 90rpx; padding: 14rpx 24rpx; margin-bottom: 18rpx; border: 1rpx solid #dfd0c4; color: var(--wine); background: #fffaf5; font-size: 28rpx; border-radius: 22rpx; }

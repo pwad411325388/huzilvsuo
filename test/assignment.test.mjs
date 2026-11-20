@@ -47,7 +47,7 @@ async function setup(t) {
   return { admin, a, b, broker, call, request, investor, company, view, lead, status };
 }
 
-test('券商推荐按渠道绑定销售派单并可跟进，自然客户按每条留资的公司派单', async t => {
+test('券商推荐按渠道绑定销售派单，自然客户按每条留资的公司派单，旧跟进入口关闭', async t => {
   const api = await setup(t);
   const { admin, a, b, broker, call, investor, company, view, lead, status } = api;
   const alpha = await company('虚构公司甲', 'TSTA', 'sales-b', { aliases: '甲股票,Alpha Test' });
@@ -73,18 +73,17 @@ test('券商推荐按渠道绑定销售派单并可跟进，自然客户按每�
   assert.equal(boardA.assignedLeads.find(row => row.id === sameCompany.id).brokerId, 'broker-a');
   assert.equal(boardA.assignedLeads.find(row => row.id === sameCompany.id).companyId, alpha.id);
   assert.equal(boardA.assignedLeads.find(row => row.id === unmatched.id).companyId, null);
-  assert.equal(await status('/followups', { leadId: sameCompany.id, version: 1, note: '公司负责人无权跟进券商留资' }, b), 403);
-  assert.equal(await status('/followups', { clientId: referred.actor.id, note: '旧客户级接口不可越权' }, a), 403);
-  await call('/followups', { leadId: first.id, version: 1, note: '仅第一条留资可见' }, b);
-  await call('/followups', { leadId: sameCompany.id, version: 1, note: '券商经办销售跟进' }, a);
-  assert.equal((await view(a)).assignedLeads.find(row => row.id === sameCompany.id).status, '已跟进');
-  assert.equal((await view(b)).assignedLeads.find(row => row.id === first.id).status, '已跟进');
-  assert.equal((await view(a)).assignedLeads.find(row => row.id === unmatched.id).followups.length, 0);
+  assert.equal(await status('/followups', { leadId: sameCompany.id, version: 1, note: '旧销售客户端' }, b), 404);
+  assert.equal(await status('/followups', { clientId: referred.actor.id, note: '旧客户级接口' }, a), 404);
+  for (const actor of [a,b,broker,admin,direct]) assert.equal(await status('/followups', { leadId: first.id, version: 1, note: '旧入口关闭' }, actor), 404);
+  assert.equal((await view(a)).assignedLeads.find(row => row.id === sameCompany.id).status, '已分配');
+  assert.equal((await view(b)).assignedLeads.find(row => row.id === first.id).status, '已分配');
+  assert.doesNotMatch(JSON.stringify(await view(a)), /followups|followStatus|canFollowup/);
   assert.equal((await view(broker)).assignedLeads, undefined);
   const before = await view(admin);
   const pendingCount = snapshot => overview(snapshot).find(([name]) => name === '待分配留资')[1];
   assert.equal(pendingCount(before), pendingCount(initial));
-  const referredReport = reportRows(before, { type: 'leads', brokerId: 'broker-a', salesId: 'sales-a', state: '已跟进' });
+  const referredReport = reportRows(before, { type: 'leads', brokerId: 'broker-a', salesId: 'sales-a', state: '已分配' });
   assert.ok(referredReport.some(row => row.stockCode === 'TSTA' && row.sales === '虚构 sales-a'));
   assert.equal(reportRows(before, { type: 'leads', brokerId: 'broker-a', salesId: 'sales-b' }).some(row => row.stockCode === 'TSTA'), false);
   const directClient = before.clients.find(row => row.id === direct.actor.id);
@@ -110,7 +109,7 @@ test('券商绑定的销售不可用时，已匹配公司的推荐留资仍待�
   assert.equal(assigned.status, '待分配');
   assert.equal(assigned.needsAssignment, true);
   assert.match(assigned.reason, /券商|渠道/);
-  assert.equal(await status('/followups', { leadId: created.id, version: assigned.version, note: '越权' }, b), 403);
+  assert.equal(await status('/followups', { leadId: created.id, version: assigned.version, note: '旧入口关闭' }, b), 404);
   const unconfigured = await lead(referred, '无公司配置', 'OTHER');
   const transfer = { leadId: unconfigured.id, salesId: 'sales-b', version: 1, reason: '渠道负责人已停用，改由同事跟进' };
   assert.equal(await status('/assignments', { ...transfer, companyId: '不存在的公司' }, admin), 400);
@@ -118,14 +117,14 @@ test('券商绑定的销售不可用时，已匹配公司的推荐留资仍待�
   assert.equal(await status('/assignments', transfer, admin), 409);
   const manual = (await view(b)).assignedLeads.find(row => row.id === unconfigured.id);
   assert.equal(manual.companyId, null);
-  assert.equal(manual.status, '待跟进');
-  await call('/followups', { leadId: manual.id, version: manual.version, note: '按转派结果跟进' }, b);
+  assert.equal(manual.status, '已分配');
+  assert.equal(await status('/followups', { leadId: manual.id, version: manual.version, note: '旧入口关闭' }, b), 404);
   await call('/accounts/status', { identityId: seller.id, status: 'active', currentPassword: 'admin-password' }, admin);
   const restored = (await view(admin)).assignments;
   assert.equal(restored.find(row => row.id === created.id).salesId, 'sales-a');
   assert.equal(restored.find(row => row.id === created.id).needsAssignment, false);
   assert.equal(restored.find(row => row.id === manual.id).salesId, 'sales-b');
-  assert.equal(restored.find(row => row.id === manual.id).status, '已跟进');
+  assert.equal(restored.find(row => row.id === manual.id).status, '已分配');
 });
 
 test('名称代码冲突、未匹配、未配置或停用负责人进入待分配，后台核对转派与版本校验', async t => {
@@ -148,15 +147,15 @@ test('名称代码冲突、未匹配、未配置或停用负责人进入待分�
   assert.equal(await status('/companies', { name: '伪造公司' }, owner), 403);
   await call('/assignments', assign, admin);
   assert.equal(await status('/assignments', { ...assign, salesId: 'sales-b' }, admin), 409);
-  await call('/followups', { leadId: ids[0], version: 2, note: '原经办记录' }, a);
+  assert.equal(await status('/followups', { leadId: ids[0], version: 2, note: '旧入口关闭' }, a), 404);
   await call('/assignments', { ...assign, version: 2, salesId: 'sales-b', reason: '转交新经办人' }, admin);
-  assert.equal(await status('/followups', { leadId: ids[0], version: 2, note: '转派后禁止旧销售写入' }, a), 403);
-  assert.equal(await status('/followups', { leadId: ids[0], version: 2, note: '新销售旧版本' }, b), 409);
+  assert.equal(await status('/followups', { leadId: ids[0], version: 2, note: '转派后禁止旧销售写入' }, a), 404);
+  assert.equal(await status('/followups', { leadId: ids[0], version: 2, note: '新销售旧版本' }, b), 404);
   const assigned = (await view(b)).assignedLeads.find(row => row.id === ids[0]);
   assert.equal(assigned.stockCode, 'BB', 'original user input preserved');
   assert.equal(assigned.companyId, alpha.id);
-  assert.equal(assigned.status, '待跟进');
-  assert.equal(assigned.followups[0].note, '原经办记录');
+  assert.equal(assigned.status, '已分配');
+  assert.equal(assigned.followups, undefined);
   assert.ok(!(await view(a)).assignedLeads.some(row => ids.includes(row.id)));
   const account = (await view(admin)).accounts.find(row => row.subjectId === 'sales-b');
   await call('/accounts/status', { identityId: account.id, status: 'closed', currentPassword: 'admin-password' }, admin);
@@ -206,7 +205,6 @@ test('后台统计区分人条件及渠道/经办销售，筛选页面和 CSV/Ex
   await call('/cases', { leadId: first.id, title: '第一案件', openedOn: today(), status: '诉讼中' }, admin);
   await call('/cases', { leadId: first.id, title: '第二案件', openedOn: today(), status: '已结案' }, admin);
   await call('/cases', { leadId: second.id, title: '第三案件', openedOn: today(), status: '待受理' }, admin);
-  await call('/followups', { leadId: first.id, version: 1, note: '已沟通' }, b);
   const snapshot = await view(admin);
   assert.equal(salesRows(snapshot).find(row => row.id === 'sales-b').leads, 2, '一条公司派单和一条开户时补派的券商留资');
   assert.equal(salesRows(snapshot).find(row => row.id === 'sales-b').closed, 1);
@@ -221,7 +219,7 @@ test('后台统计区分人条件及渠道/经办销售，筛选页面和 CSV/Ex
   assert.equal(cases.length, 2);
   assert.ok(cases.every(row => /^AJ-\d{6}$/.test(row.number)));
   assert.equal((await view(a)).assignedLeads.find(row => row.id === second.id).cases.length, 1);
-  const filtered = reportRows(snapshot, { type: 'leads', salesId: 'sales-b', brokerId: '__natural__', state: '已跟进' });
+  const filtered = reportRows(snapshot, { type: 'leads', salesId: 'sales-b', brokerId: '__natural__', state: '已分配' });
   assert.equal(filtered.length, 1);
   assert.equal(filtered[0].stockCode, 'AAA');
   for (const [type] of reportTypes) {
@@ -236,7 +234,7 @@ test('后台统计区分人条件及渠道/经办销售，筛选页面和 CSV/Ex
     assert.equal(excel.status, 200);
     assert.equal(Buffer.from(await excel.arrayBuffer()).subarray(0, 2).toString(), 'PK');
   }
-  const filteredCsv = await (await request('/export?type=leads&salesId=sales-b&brokerId=__natural__&state=已跟进', null, admin.token)).text();
+  const filteredCsv = await (await request('/export?type=leads&salesId=sales-b&brokerId=__natural__&state=已分配', null, admin.token)).text();
   assert.ok(filteredCsv.includes('AAA'));
   assert.ok(!filteredCsv.includes('BBB'));
 });
@@ -252,7 +250,7 @@ test('升级将待派券商留资交给其绑定销售，保留自然留资、�
     const company = store.saveCompany(admin, { name: '示例股票乙', stockCode: '000001', aliases: '', salesId: 'sales-a', active: true });
     const manualLead = store.view(admin).assignments.find(row => row.id === 'lead-demo-b');
     store.assignLead(admin, { leadId: manualLead.id, companyId: company.id, salesId: 'sales-a', version: manualLead.version, reason: '原人工交接' });
-    store.addFollowup({ role: 'sales', id: 'sales-a' }, { leadId: manualLead.id, version: manualLead.version + 1, note: '原留资跟进' });
+    assert.equal(store.addFollowup, undefined);
     const manual = store.view(admin).assignments.find(row => row.id === manualLead.id);
     store.close(); store = null;
     const db = new DatabaseSync(path);
@@ -260,6 +258,7 @@ test('升级将待派券商留资交给其绑定销售，保留自然留资、�
     try {
       const time = new Date().toISOString();
       db.prepare('INSERT INTO followups VALUES (?,?,?,?,?)').run('old-followup', 'customer-a', 'sales-a', '旧客户记录', time);
+      db.prepare('INSERT INTO lead_followups VALUES (?,?,?,?,?,?)').run('old-lead-followup',manual.id,'sales-a',manual.version,'原留资跟进',time);
       // Reproduce the persisted dispatch records and migration flags from the release before broker dispatch.
       db.exec("DELETE FROM settings WHERE key='brokerReferralRoutingV1'");
       db.exec("UPDATE lead_assignments SET method='legacy', legacy=1, salesId=NULL, version=1 WHERE leadId='lead-demo-a'");
@@ -279,7 +278,7 @@ test('升级将待派券商留资交给其绑定销售，保留自然留资、�
     for (const id of ['lead-demo-a', 'old-pending']) {
       assert.equal(row(id).salesId, 'sales-a');
       assert.equal(row(id).legacy, 0);
-      assert.equal(row(id).status, '待跟进');
+      assert.equal(row(id).status, '已分配');
       assert.equal(row(id).version, 2);
       assert.match(row(id).reason, /券商|渠道/);
     }
@@ -293,10 +292,12 @@ test('升级将待派券商留资交给其绑定销售，保留自然留资、�
     assert.deepEqual(after.assignments, before.assignments);
     assert.deepEqual(after.cases, before.cases);
     assert.deepEqual(after.audit, before.audit);
-    assert.equal(after.legacyFollowups[0].note, '旧客户记录');
-    assert.equal(after.assignments.find(row => row.id === 'lead-demo-a').followups.length, 0);
+    assert.equal(after.legacyFollowups, undefined);
+    assert.ok(after.assignments.every(row=>!('followups' in row)));
     const inspect = new DatabaseSync(path);
     assert.deepEqual(inspect.prepare('SELECT * FROM leads ORDER BY id').all(), original);
+    assert.equal(inspect.prepare('SELECT note FROM followups WHERE id=?').get('old-followup').note,'旧客户记录');
+    assert.equal(inspect.prepare('SELECT note FROM lead_followups WHERE id=?').get('old-lead-followup').note,'原留资跟进');
     inspect.close();
   } finally {
     store?.close();

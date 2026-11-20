@@ -1,4 +1,4 @@
-import { caseRows, channelRows, salesRows, matchesFilters, sourceLabel } from './analytics.js';
+import { caseRows, channelRows, salesRows, matchesFilters, sourceLabel, assignmentLabel } from './analytics.js';
 import { compareRecent } from './list-order.js';
 
 export const reportColumns = [
@@ -20,14 +20,14 @@ export function reportDefinition(type = 'leads') {
   const definitions = {
     leads: { title: '留资记录', description: '销售按每条留资的经办人统计；同一股民的不同留资可以有不同销售。历史未核对记录显示待分配。',
       columns: columns([['number', '记录编号', 19], ['customer', '客户姓名'], ['stockName', '股票名称'], ['stockCode', '股票代码', 18],
-        ['company', '核对公司', 28], ['broker', '来源渠道', 28], ['sales', '经办销售'], ['date', '日期', 18], ['status', '分派/跟进状态', 20]]) },
+        ['company', '核对公司', 28], ['broker', '来源渠道', 28], ['sales', '经办销售'], ['date', '日期', 18], ['status', '分配状态', 20]]) },
     signings: { title: '签约记录', description: '按客户实际签约统计，每人一条。此表的销售仍指券商合作负责人；签约业绩归属口径尚待确认。', columns: reportColumns },
     cases: { title: '客户案件', description: '按案件计数，销售为案件对应留资的当前经办人，仅含当前案件分界日之后的记录。',
       columns: columns([['number', '案件编号', 19], ['customer', '客户姓名'], ['title', '案件名称', 30], ['stockName', '股票名称'],
         ['stockCode', '股票代码', 18], ['broker', '来源渠道', 28], ['sales', '经办销售'], ['date', '登记日期', 18], ['status', '案件状态', 16]]) },
     sales: { title: '销售汇总', summary: true, description: '渠道按合作负责人统计，经办留资按当前派单统计。客户在每位销售内去重，跨销售可能重复，不应相加作为全平台人数。',
       columns: columns([['name', '销售'], ['status', '账号状态', 16], ['channels', '合作渠道数', 18], ['channelCustomers', '渠道留资客户数', 20],
-        ['leads', '经办留资数', 18], ['customers', '经办客户数', 18], ['pending', '待跟进留资', 18], ['followed', '已跟进留资', 18], ['ongoing', '经办在办案件', 20], ['closed', '经办已结案件', 20]]) },
+        ['leads', '经办留资数', 18], ['customers', '经办客户数', 18], ['ongoing', '经办在办案件', 20], ['closed', '经办已结案件', 20]]) },
     channels: { title: '渠道汇总', summary: true, description: '按客户当前券商归属汇总，自然流入保持无券商归属；各项分别按人、条、件计数。',
       columns: columns([['name', '渠道名称', 30], ['sales', '合作负责人'], ['status', '账号状态', 18], ['date', '合作签约日期', 18],
         ['customers', '留资客户数', 18], ['leads', '留资条数', 18], ['ongoing', '在办案件数', 18], ['closed', '已结案件数', 18]]) },
@@ -44,7 +44,7 @@ export function reportRows(view, filters = {}) {
   if (filters.type === 'cases') return caseRows(view).filter(row => matchesFilters(row, filters)).map(row => ({ ...row, sales: row.handler }));
   if (filters.type !== 'signings') return view.assignments.map(lead => ({ number: lead.number, customer: lead.name, phone: lead.phone,
     stockName: lead.stockName, stockCode: lead.stockCode, companyId: lead.companyId, company: lead.companyName || '', brokerId: lead.brokerId,
-    broker: sourceLabel(lead), handlerId: lead.salesId, sales: lead.salesName || '待分配', date: lead.createdOn, status: lead.status }))
+    broker: sourceLabel(lead), handlerId: lead.salesId, sales: lead.salesName || '待分配', date: lead.createdOn, status: assignmentLabel(lead) }))
     .filter(row => matchesFilters(row, filters)).sort(compareRecent);
   const salesById = new Map(sales.map(staff => [staff.id, staff]));
   const source = clients.filter(client => client.signedOn).map(client => ({ client, date: client.signedOn, serial: client.signingNumber }));

@@ -4,22 +4,31 @@ import { mountAdminSalesPanel, renderAdminSalesDetails, renderAdminSalesOverview
 
 const overview = (name = '测试销售甲') => ({
   rows: [{ id: 'seller-a', name, status: '正常', channelCount: 1, channelCustomers: 19, recordCount: 31, customerCount: 22,
-    systemRecordCount: 2, registryRecordCount: 29, pending: 1, followed: 1, followUnknown: 29, ongoing: 4, closed: 5,
+    systemRecordCount: 2, registryRecordCount: 29, ongoing: 4, closed: 5,
     unknownCaseCount: 20, unverifiedCustomerCount: 10, sourceUnknownCount: 3,
     sources: [{ key: 'source-a', name: '测试来源', origin: 'registry', recordCount: 28, customerCount: 19 }] }],
   meta: { sourceName: '合成样表.xlsx', importedAt: '2026-11-18T00:00:00Z', registryTotal: 33, registryLinked: 29, registryUnlinked: 4 },
-  notes: ['历史跟进状态未记录，不计入小程序待跟进。'],
+  notes: [],
 });
 const detailResult = (title = '测试客户甲', offset = 0) => ({ metric: 'records', title: '留资与登记', total: 31, offset, limit: 20,
   items: [{ id: 'one', number: 'DJ-000101', title, phone: '19900008881', stockName: '测试股票', stockCode: 'TST',
-    source: '测试来源', sales: '测试销售甲', registeredOn: '2026-11-18', followStatus: '未记录', caseStatus: '进度待核对', origin: 'registry' }], notes: [] });
+    source: '测试来源', sales: '测试销售甲', registeredOn: '2026-11-18', assignmentStatus: '已关联', caseStatus: '进度待核对', origin: 'registry' }], notes: [] });
 const selection = { salesId: 'seller-a', salesName: '测试销售甲', metric: 'records', origin: 'all', q: '', offset: 0 };
+
+test('销售客户档案明细将案件进度与资料状态分开显示', () => {
+  const data = detailResult();
+  data.items[0] = { ...data.items[0], status: '资料待核对', caseStatus: '多个案件进度' };
+  const html = renderAdminSalesDetails(data, { ...selection, metric: 'customers' });
+  assert.match(html, /<th\b[^>]*>案件进度<\/th>/);
+  assert.match(html, /<td>多个案件进度<\/td>/);
+  assert.match(html, /<small>资料待核对<\/small>/);
+});
 
 test('销售汇总标明历史来源和档案单位，每个可点击数字带对应明细范围', () => {
   const html = renderAdminSalesOverview(overview(), { salesId: 'seller-a', q: '甲' });
   assert.match(html, /来源渠道统计/);
   assert.match(html, /历史来源不表示已开通券商账号/);
-  assert.match(html, /历史跟进未记录/);
+  assert.doesNotMatch(html, /跟进/);
   assert.match(html, /进度待核登记/);
   assert.match(html, /data-sales-id="__unlinked__"[^>]*data-metric="records"/);
   assert.match(html, /data-metric="customers"[^>]*data-source-key="__known__"/);
@@ -46,6 +55,9 @@ test('名称、来源、搜索及明细文本都转义，登记资料不作为�
   const detailHtml = renderAdminSalesDetails(details, { ...selection, salesName: malicious, q: malicious });
   assert.doesNotMatch(detailHtml, /<img|<script>/);
   assert.match(detailHtml, /DJ-000101/);
+  assert.match(detailHtml, /<td>已关联<\/td>/);
+  assert.match(detailHtml, /进度待核对/);
+  assert.doesNotMatch(detailHtml, /跟进/);
   assert.match(detailHtml, /第 1 \/ 2 页/);
   assert.match(detailHtml, /data-offset="0" disabled/);
   assert.match(detailHtml, /data-offset="20"/);

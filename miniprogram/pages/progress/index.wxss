@@ -1,19 +1,21 @@
-.progress-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6rpx 16rpx; margin-bottom: 18rpx; }
-.progress-heading .heading { margin: 0; }
-.progress-stage { color: #435974; font-size: 25rpx; }
-.step-list { padding: 2rpx 0; }
-.step-key { margin-top: 12rpx; font-size: 23rpx; }
-.step-row { position: relative; display: flex; align-items: flex-start; gap: 17rpx; min-height: 44rpx; padding-bottom: 18rpx; }
+.case-cover { box-sizing: border-box; padding: 26rpx; border: 1rpx solid #e3cdc6; border-radius: 24rpx; background: #f5e9e4; line-height: 1.65; }
+.case-cover .title { color: #582335; margin: 7rpx 0 12rpx; }
+.case-progress .heading { padding-bottom: 16rpx; border-bottom: 1rpx solid #e7dcd1; margin-bottom: 18rpx; }
+.step-list { padding: 6rpx 0; }
+.step-row { position: relative; display: flex; align-items: flex-start; padding-bottom: 32rpx; }
 .step-row:last-child { padding-bottom: 0; }
-.step-mark { position: relative; z-index: 1; flex: none; box-sizing: border-box; width: 22rpx; height: 22rpx; margin: 10rpx 0 0 3rpx; border: 3rpx solid #95a6b9; border-radius: 50%; background: #fff; }
-.step-connector { position: absolute; top: 21rpx; bottom: -21rpx; left: 13rpx; width: 2rpx; background: #cbd5df; }
-.step-content { flex: 1; min-width: 0; padding-bottom: 4rpx; }
-.step-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4rpx 12rpx; min-height: 42rpx; }
-.step-label { color: #58687c; font-size: 28rpx; overflow-wrap: anywhere; }
-.step-current .step-mark { border: 5rpx solid #153a61; background: #f1c76d; }
-.step-current .step-label { color: #152b49; font-weight: 700; }
-.step-completed .step-mark { display: flex; align-items: center; justify-content: center; color: #fff; background: #3e6a60; border-color: #3e6a60; font-size: 15rpx; font-weight: 700; line-height: 1; }
-.step-badge { padding: 0 10rpx; border-radius: 7rpx; line-height: 1.6; font-size: 22rpx; white-space: nowrap; }
-.step-current .step-badge { color: #684612; background: #fff0ca; font-weight: 700; }
-.step-completed .step-badge { color: #30584f; background: #e5f0ec; }
-.contract { margin-top: 10rpx; color: #435974; font-size: 25rpx; overflow-wrap: anywhere; word-break: break-all; }
+.step-mark { position: relative; z-index: 1; flex: none; display: flex; align-items: center; justify-content: center; box-sizing: border-box; width: 32rpx; height: 32rpx; margin-top: 20rpx; border: 3rpx solid #acb5bf; border-radius: 50%; background: #fff; }
+.step-connector { position: absolute; top: 36rpx; bottom: -36rpx; left: 15rpx; width: 2rpx; background: #c5cdd4; }
+.step-content { flex: 1; min-width: 0; margin-left: 20rpx; }
+.step-label { color: #626d79; font-size: 56rpx; font-weight: 600; line-height: 72rpx; overflow-wrap: anywhere; }
+.step-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2rpx 20rpx; }
+.step-status { min-width: 0; flex: 1 1 120rpx; color: #576674; font-size: 26rpx; line-height: 1.5; overflow-wrap: anywhere; word-break: break-all; }
+.step-date { margin-top: 4rpx; color: #606e79; font-size: 24rpx; line-height: 1.5; }
+.step-current .step-mark { color: #fff; background: #18794e; border-color: #18794e; font-size: 24rpx; font-weight: 700; line-height: 1; }
+.step-current .step-label { color: #18794e; }
+.step-active .step-mark { background: #d4a21f; border-color: #876513; }
+.step-active .step-label { color: #d4a21f; }
+.step-uncertain .step-mark { color: #52606b; background: #eef0f2; border-color: #9aa5af; }
+.step-uncertain .step-label { color: #566370; }
+.progress-notice { margin: 12rpx 0 0 52rpx; font-size: 25rpx; line-height: 1.6; }
+.contract { margin-top: 10rpx; padding: 7rpx 12rpx; color: #68404a; background: #f7efeb; border-radius: 8rpx; font-size: 25rpx; overflow-wrap: anywhere; word-break: break-all; }

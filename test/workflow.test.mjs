@@ -277,9 +277,10 @@ test('合作登记、开户、首次扫码、留资与授权改归联动', async
   assert.equal(dashboardCustomer.phone, undefined);
   assert.equal(brokerView.ledger[0].phone, undefined);
   assert.equal(brokerView.ledger[0].title, fixtureLead.name);
-  assert.equal(await status('followups', { clientId: investor.actor.id, note: '越权尝试' }, otherSales), 403);
-  await post('followups', { leadId: lead.id, version: 1, note: '已安排电话咨询' }, sales);
-  assert.equal((await view(sales)).assignedLeads.find(row => row.id === lead.id).followups[0].note, '已安排电话咨询');
+  assert.equal(await status('followups', { clientId: investor.actor.id, note: '越权尝试' }, otherSales), 404);
+  assert.equal(await status('followups', { leadId: lead.id, version: 1, note: '旧客户端提交' }, sales), 404);
+  assert.equal((await view(sales)).assignedLeads.find(row => row.id === lead.id).assignmentStatus, '已分配');
+  assert.doesNotMatch(JSON.stringify(await view(sales)),/followups|followStatus|canFollowup/);
   await post('reassign', { clientId: investor.actor.id, brokerId: 'broker-b' }, admin);
   assert.deepEqual(await post('scan', { code: administered.code }, investor), { recorded: false });
   assert.equal((await view(broker)).ledger.length, 0);
@@ -431,7 +432,7 @@ test('后台会话与不同业务标签页的登录和退出互不覆盖', async
   assert.equal(await role(salesPath, sales), 'sales');
 });
 
-test('重复签约只计一人，同一客户多案按件统计并排除历史案件', async t => {
+test('重复签约只计一人，同一客户多案按件统计，新增案件保留日期写入限制', async t => {
   const { call, login, view, post, status } = await localApi(t);
   const [admin, sales, broker, investor] = await Promise.all([
     login('admin'), login('sales-b'), login('broker', { username: 'broker-b', password: 'demo-broker-b' }), login('new-investor'),

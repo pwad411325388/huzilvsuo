@@ -67,14 +67,15 @@ test('销售看板合并授权台账、合作渠道和经办客户；同名不�
   assert.equal(snapshot.metrics.find(row => row.key === 'channels').value, 3, 'NFKC名称归一，并计入已获授权经办留资的实际来源');
   const same = snapshot.items.filter(row => row.title === '同名客户' && row.phone === '19900000001');
   assert.equal(same.length, 1); assert.equal(same[0].recordCount, 4); assert.match(same[0].subtitle, /另一股票/);
-  assert.equal(same[0].status, '已签约');
+  assert.equal(same[0].status, '多个案件进度');
+  assert.equal(same[0].signingStatus, '已签约');
   assert.ok(snapshot.items.some(row => row.title === '独立经办'), '只属于经办范围也统计，账号注销保留客户');
   assert.ok(snapshot.notes.some(note => note.startsWith('2 条登记资料不完整')));
   assert.ok(!JSON.stringify(snapshot).includes('不能看到'));
   assert.ok(!JSON.stringify(board({ metric: 'channels' })).includes('PRIVATE SOURCE'));
   assert.equal(board({ metric: 'channels' }).items.find(row => row.title === 'ALPHA').status, '已注销');
   const handledSource = board({ metric: 'channels' }).items.find(row => row.title === 'Private channel');
-  assert.equal(handledSource.subtitle, '留资来源'); assert.equal(handledSource.status, '', '知悉经办留资来源不等于拥有该券商合作关系');
+  assert.equal(handledSource.subtitle, '1 位客户 · 1 条记录'); assert.equal(handledSource.status, '', '知悉经办留资来源不等于拥有该券商合作关系');
   assert.deepEqual(db.prepare('SELECT count(*) AS n FROM brokers').get().n, 3);
 });
 
@@ -120,7 +121,30 @@ test('按中国登记日期队列筛选：累计包括缺日期，月份和自�
   }
 });
 
-test('签约只采用明确证据，结案覆盖历史且不将后续阶段或到账推定签约结案', t => {
+test('销售看板支持每页五条，完整集合排序后分页且保留日期和权限边界', t => {
+  const { entry, board } = fixture(t);
+  for (let i = 0; i < 11; i++) entry('five-' + i, { name: '分页客户' + i, phone: '', date: '2026-11-10' });
+  entry('hidden-five', { name: '他人分页客户', sales: '销售乙', date: '2026-11-10' });
+  const original = board({ metric: 'customers' });
+  assert.equal(original.limit, 20);
+  assert.deepEqual(board({ metric: 'customers', limit: '20' }).items, original.items);
+  const pages = [0, 5, 10].map(offset => board({ metric: 'customers', limit: '5', offset }));
+  assert.deepEqual(pages.map(page => page.items.length), [5, 5, 3]);
+  assert.ok(pages.every(page => page.limit === 5 && page.total === 13 && page.metrics.find(metric => metric.key === 'customers').value === 13));
+  assert.deepEqual(pages.flatMap(page => page.items), original.items);
+  assert.equal(new Set(pages.flatMap(page => page.items).map(item => item.id)).size, 13);
+  assert.deepEqual(board({ metric: 'customers', limit: 5, offset: 9999 }).items, pages[2].items);
+  assert.equal(board({ metric: 'customers', limit: 5, offset: 7 }).offset, 5);
+  const day = board({ metric: 'customers', limit: 5, period: 'custom', from: '2026-11-10', to: '2026-11-10', offset: 10 });
+  assert.equal(day.total, 11); assert.equal(day.items.length, 1); assert.equal(day.offset, 10);
+  assert.equal(board({ metric: 'customers', limit: 5, period: 'custom', from: '2026-01-01', to: '2026-01-01', offset: 10 }).offset, 0);
+  for (const limit of [0, 1, 10, 21, -5, 5.5, null, '', true, '05', '5.0', ' 5 ', [], {}]) {
+    assert.throws(() => board({ limit }), error => error.status === 400);
+  }
+  assert.throws(() => board({ limit: 5 }, { role: 'investor', id: 'sales-a' }), error => error.status === 403);
+});
+
+test('历史立案和后续阶段可计签约，当前有效的结案与单纯到账分别展示', t => {
   const { db, entry, board } = fixture(t);
   entry('closed', { name: '历史结案客户', phone: '19900000021', date: '2020-03-27', stage: 'closure', node: 'closed' });
   entry('filed', { name: '已立案客户', phone: '19900000022', status: '已立案' });
@@ -129,11 +153,14 @@ test('签约只采用明确证据，结案覆盖历史且不将后续阶段或�
   entry('cleared', { name: '已清除结案状态', phone: '19900000025', stage: 'closure', node: 'closed', status: '已结案' });
   db.exec("INSERT INTO company_record_progress VALUES ('registry','cleared','','','[]'),('lead','lb','intake','signed','[]')");
   const signedResult = board({ metric: 'effective' });
-  assert.equal(signedResult.total, 3); assert.ok(!signedResult.items.some(row => row.title === '已立案客户'));
+  assert.equal(signedResult.total, 6);
+  for (const title of ['历史结案客户','已立案客户','到账客户']) assert.equal(signedResult.items.find(row=>row.title===title).signedOn,'');
+  assert.ok(!signedResult.items.some(row=>row.title==='已清除结案状态'));
   const closedResult = board({ metric: 'closed' });
   assert.equal(closedResult.total, 3); assert.ok(!closedResult.items.some(row => row.title === '已清除结案状态'));
   const historical = closedResult.items.find(row => row.subtitle === '早期结案');
-  assert.equal(historical.kind, undefined, '旧案件超出当前详情权限时不提供不可用跳转');
+  assert.equal(historical.kind, 'case', '自有早期案件与统一记录和详情读取范围一致');
+  assert.equal(historical.progressId, historical.id.slice('case:'.length));
   assert.ok(closedResult.items.find(row => row.title === '历史结案客户').progressId);
   assert.equal(board({ metric: 'closed', period: 'month' }).total, 2, '按客户登记队列查看当前已结案，而非声称当月结案');
   assert.ok(signedResult.notes.some(note => note.includes('签约状态待确认，未计入已签约客户')));
@@ -166,7 +193,8 @@ test('老客户新增股票按留资日期入期，摘要与结案只取对应�
   assert.equal(clients.items[0].registeredOn, '2026-11-02');
   assert.match(clients.items[0].subtitle, /测试股票乙/);
   assert.doesNotMatch(clients.items[0].subtitle, /测试股票甲/);
-  assert.equal(clients.items[0].status, '已签约', '按登记队列展示当前签约状态');
+  assert.equal(clients.items[0].status, '已结案', '按登记队列展示该股票的当前案件进度');
+  assert.equal(clients.items[0].signingStatus, '已签约', '签约资格与进度展示分开');
   assert.equal(clients.items[0].progressId, 'la2', '单条本期股票可直接进入该留资进度');
   const cases = board({ ...input, metric: 'closed' });
   assert.equal(cases.total, 1); assert.equal(cases.items[0].subtitle, '本期股票结案');
@@ -194,7 +222,7 @@ test('自然流入及同客户不同经办股票按授权记录统计，不扩�
   const channels = board({ ...input, metric: 'channels' });
   assert.equal(channels.total, 2);
   assert.ok(channels.items.some(row => row.title === '自然流入'));
-  assert.ok(channels.items.some(row => row.title === 'Private channel' && row.subtitle === '留资来源'));
+  assert.ok(channels.items.some(row => row.title === 'Private channel' && row.customerCount === 1 && row.recordCount === 1));
 });
 
 test('券商负责人不能凭合作关系继续查看已转派给其他销售的股票、案件或签约快照', t => {
@@ -207,13 +235,15 @@ test('券商负责人不能凭合作关系继续查看已转派给其他销售�
   const alice = owner.items.find(row => row.title === '同名客户');
   assert.equal(alice.recordCount, 1); assert.match(alice.subtitle, /测试股票甲/);
   assert.doesNotMatch(alice.subtitle, /测试股票乙/);
-  assert.equal(alice.status, '签约状态未确认');
+  assert.equal(alice.status, '已结案');
+  assert.equal(alice.signingStatus, '签约状态未确认');
   assert.equal(alice.progressId, 'la');
   assert.ok(!JSON.stringify(board({ metric: 'closed' })).includes('转派股票结案'));
   const receiver = board({ metric: 'customers' }, { role: 'sales', id: 'sales-b' });
   const received = receiver.items.find(row => row.title === '同名客户');
   assert.equal(received.recordCount, 1); assert.match(received.subtitle, /测试股票乙/);
   assert.doesNotMatch(received.subtitle, /测试股票甲/); assert.equal(received.status, '已签约');
+  assert.equal(received.signingStatus, '已签约');
   assert.ok(board({ metric: 'closed' }, { role: 'sales', id: 'sales-b' }).items.some(row => row.subtitle === '转派股票结案'));
   db.exec("UPDATE lead_assignments SET salesId='sales-b' WHERE leadId='la'");
   assert.ok(!board({ metric: 'customers' }).items.some(row => row.title === '同名客户'));

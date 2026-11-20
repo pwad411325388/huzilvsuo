@@ -6,6 +6,9 @@ import { createCaseProgress } from './case-progress.mjs';
 import { createSalesBoard } from './sales-board.mjs';
 import { createAdminSales } from './admin-sales.mjs';
 import { createBrokerBoard } from './broker-board.mjs';
+import { createUserRecords, recordDate } from './user-records.mjs';
+import { createAdminProgressTest } from './admin-progress-test.mjs';
+import { createInvestorHome } from './investor-home.mjs';
 import { classifyCase } from './data-semantics.mjs';
 import { compareAccounts, compareRecent } from './web/list-order.js';
 
@@ -59,7 +62,7 @@ function accountPassword(value) {
 const companyNameKey = value => value.normalize('NFKC').replace(/\s+/g, '').toUpperCase();
 const stockCodeKey = value => value.normalize('NFKC').trim().toUpperCase();
 
-export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed = false, admin } = {}) {
+export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed = false, admin, progressTestEnabled = false } = {}) {
   const db = new DatabaseSync(path);
   db.exec(`
     PRAGMA foreign_keys = ON;
@@ -382,8 +385,11 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
     });
   }
 
-  function recoverPassword(input) {
+  function recoverPassword(input, { allowAdmin = true } = {}) {
     const username = accountName(input.username);
+    if (!allowAdmin && one("SELECT 1 FROM identities WHERE username=? AND role='admin'", username)) {
+      throw new RequestError(403, '管理员密码恢复仅限在服务电脑上操作');
+    }
     const password = accountPassword(input.password);
     const code = typeof input.code === 'string' ? input.code.replace(/[\s-]/g, '').toLowerCase() : '';
     const accountDigest = tokenHash(username);
@@ -641,20 +647,6 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
     return { id };
   }
 
-  function addFollowup(actor, input) {
-    const note = requiredText(input.note, '跟进记录', 500);
-    requireValue(typeof input.leadId === 'string' && input.leadId, '请按具体留资记录跟进', 403);
-    const id = randomUUID();
-    transaction(() => {
-      const assignment = one('SELECT salesId,version FROM lead_assignments WHERE leadId = ?', input.leadId);
-      requireValue(assignment?.salesId === actor.id, '无法跟进该留资，可能已转交其他销售', 403);
-      requireValue(Number(input.version) === assignment.version, '该留资的分派已更新，请刷新后再跟进', 409);
-      run('INSERT INTO lead_followups VALUES (?,?,?,?,?,?)', id, input.leadId, actor.id, assignment.version, note, now());
-      audit(actor, '留资跟进', input.leadId);
-    });
-    return { id };
-  }
-
   function availableSales(id) {
     return one("SELECT 1 FROM identities WHERE role = 'sales' AND subjectId = ? AND status = 'active'", id);
   }
@@ -784,13 +776,11 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
       LEFT JOIN brokers b ON b.id = c.brokerId LEFT JOIN report_numbers n ON n.kind = 'lead' AND n.subjectId = l.id
       ${salesId ? 'WHERE a.salesId = ?' : ''} ORDER BY l.createdAt DESC,l.rowid DESC`, ...(salesId ? [salesId] : []));
     return rows.map(row => {
-      const followups = all(`SELECT f.id,f.note,f.createdAt,f.assignmentVersion,f.salesId,s.name AS salesName FROM lead_followups f
-        JOIN sales_staff s ON s.id = f.salesId WHERE f.leadId = ? ORDER BY f.createdAt DESC,f.rowid DESC`, row.id);
       const needsAssignment = !row.salesId || row.salesStatus !== 'active';
       return { ...row, number: `LZ-${String(row.recordNumber).padStart(6, '0')}`, createdOn: businessDate.format(new Date(row.createdAt)),
         needsAssignment, reason: row.salesId && row.salesStatus !== 'active' ? '负责销售账号不可用，请重新分配' : row.reason,
-        followups, status: needsAssignment ? '待分配' : followups.some(item => item.assignmentVersion === row.version) ? '已跟进' : '待跟进',
-        cases: currentCases(all('SELECT id,title,status,openedOn FROM cases WHERE leadId = ? AND openedOn >= ? ORDER BY openedOn DESC,id', row.id, caseCutoff)) };
+        assignmentStatus: needsAssignment ? '待分配' : '已分配', status: needsAssignment ? '待分配' : '已分配',
+        cases: currentCases(all('SELECT id,title,status,openedOn FROM cases WHERE leadId = ? ORDER BY openedOn DESC,id', row.id)) };
     });
   }
 
@@ -853,7 +843,7 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
     const cases = currentCases(all(`SELECT k.*, c.id AS clientId, c.name, c.phone FROM cases k JOIN leads l ON l.id = k.leadId
       JOIN clients c ON c.id = l.clientId JOIN brokers b ON b.id = c.brokerId
       LEFT JOIN lead_assignments a ON a.leadId=l.id
-      WHERE ${sales ? 'a.salesId' : 'b.id'} = ? AND k.openedOn >= ? ORDER BY k.openedOn DESC, k.id`, actor.id, caseCutoff));
+      WHERE ${sales ? 'a.salesId' : 'b.id'} = ? ORDER BY k.openedOn DESC, k.id`, actor.id));
     const customerCards = clients.map(client => boardCard(client, actor, client.signedOn ? client : null));
     const caseCards = cases.map(record => ({
       id: record.id, clientId: record.clientId,
@@ -890,24 +880,23 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
       const client = clientById(actor.id);
       const leads = all('SELECT * FROM leads WHERE clientId = ? ORDER BY createdAt DESC, rowid DESC', actor.id);
       return { actor, contact: client.name && client.phone ? { name: client.name, phone: client.phone } : null,
+        investorHome: investorHome.summary(actor),
         today: today(), leads: leads.map(lead => ({ ...lead,
-        createdOn: businessDate.format(new Date(lead.createdAt)),
-        cases: currentCases(all('SELECT id,title,status,openedOn FROM cases WHERE leadId = ? AND openedOn >= ? ORDER BY openedOn DESC, id', lead.id, caseCutoff), 'investor') })) };
+        createdOn: recordDate(lead.createdAt),
+        cases: currentCases(all('SELECT id,title,status,openedOn FROM cases WHERE leadId = ? ORDER BY openedOn DESC, id', lead.id), 'investor') })) };
     }
     if (actor.role === 'admin') {
       const clients = all(`SELECT c.*, s.signedOn, s.reference, b.name AS brokerName, b.salesId, n.number AS signingNumber FROM clients c
         LEFT JOIN signings s ON s.clientId = c.id LEFT JOIN brokers b ON b.id = c.brokerId
         LEFT JOIN report_numbers n ON n.kind = 'signing' AND n.subjectId = s.clientId
         WHERE c.brokerId IS NOT NULL OR c.name IS NOT NULL ORDER BY c.createdAt DESC,c.id`);
-      return { actor, today: today(), caseCutoff, caseStatuses, clients, initialBusinessPassword,
+      return { actor, today: today(), caseCutoff, caseStatuses, clients, initialBusinessPassword, progressTestEnabled:!!progressTestEnabled,
         accountOrderLabel: '正常账号在前，已注销在后；同组按账号创建顺序从新到旧。',
         companies: all(`SELECT co.*,s.name AS salesName,i.status AS salesStatus FROM companies co
           LEFT JOIN sales_staff s ON s.id = co.salesId LEFT JOIN identities i ON i.role = 'sales' AND i.subjectId = co.salesId ORDER BY co.name`)
           .map(company => ({ ...company, aliases: all('SELECT name FROM company_names WHERE companyId = ? AND nameKey != ? ORDER BY name',
             company.id, companyNameKey(company.name)).map(item => item.name).join('，') })),
         assignments: assignedLeads(),
-        legacyFollowups: all(`SELECT f.*,c.name,s.name AS salesName FROM followups f JOIN clients c ON c.id = f.clientId
-          LEFT JOIN sales_staff s ON s.id = f.salesId ORDER BY f.createdAt DESC,f.rowid DESC`),
         accounts: all(`SELECT i.id,i.username,i.role,i.subjectId,i.status,i.closedAt,i.passwordChangeRequired,
           COALESCE(b.name,s.name,c.name,i.name) AS name FROM identities i
           LEFT JOIN brokers b ON i.role = 'broker' AND b.id = i.subjectId
@@ -935,15 +924,22 @@ export function createStore(path, { cutoff = `${today().slice(0, 7)}-01`, seed =
 
   const registry = createRegistry(db, { requireValue, transaction, audit });
   const registrySalesBatch = createRegistrySalesBatch(db, { requireValue, transaction, createSalesAccount, audit });
-  const progress = createCaseProgress(db, { transaction, requireValue, registry, caseCutoff });
+  const progress = createCaseProgress(db, { transaction, requireValue, registry });
+  const adminProgressTest = createAdminProgressTest(db, { transaction, requireValue, audit, progress, enabled:!!progressTestEnabled });
   const salesBoard = createSalesBoard(db, { transaction, requireValue, today, caseCutoff });
   const adminSales = createAdminSales(db, { transaction, requireValue, today });
-  const brokerBoard = createBrokerBoard(db, { transaction, requireValue, today });
+  const userRecords = createUserRecords(db, { transaction, requireValue, today });
+  const investorHome = createInvestorHome(db, { transaction, requireValue, today, userRecords });
+  const readUserRecords = (actor,input={}) => {
+    requireValue(input.presentation === undefined || input.presentation === 'home','记录展示方式无效');
+    return input.presentation === 'home' ? investorHome.records(actor,input) : userRecords(actor,input);
+  };
+  const brokerBoard = createBrokerBoard(db, { transaction, requireValue, today, userRecords });
   return { registerInvestor, verifyLogin, createSession, getSession, revokeSession, renameInvestor, captureReferral, redeemReferral,
-    registry, registrySalesBatch, salesBoard, adminSales, brokerBoard, progress: progress.detail, syncProgress: progress.sync,
+    registry, registrySalesBatch, salesBoard, adminSales, brokerBoard, userRecords:readUserRecords, adminProgressTest, progress: progress.detail, syncProgress: progress.sync,
     resetAccountPassword, setAccountStatus, changePassword,
     issueRecoveryCode, recoverPassword,
-    registerBroker, openAccount, openSalesAccount, scan, reassign, addLead, addFollowup,
+    registerBroker, openAccount, openSalesAccount, scan, reassign, addLead,
     saveCompany, assignLead, changeChannelOwner,
     saveSigning, saveCase, searchClients, searchBrokers, view, close: () => db.close() };
 }

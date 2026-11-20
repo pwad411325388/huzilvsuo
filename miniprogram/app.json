@@ -1,18 +1,19 @@
 {
   "pages": ["pages/login/index", "pages/home/index", "pages/mine/index", "pages/registry/index", "pages/progress/index"],
   "window": {
-    "navigationBarTitleText": "股民索赔宝",
-    "navigationBarBackgroundColor": "#152b49",
-    "navigationBarTextStyle": "white",
-    "backgroundColor": "#eef2f7"
+    "navigationBarTitleText": "沪紫律师事务所",
+    "navigationBarBackgroundColor": "#F9F5ED",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#F9F5ED"
   },
   "tabBar": {
-    "color": "#58687c",
-    "selectedColor": "#805a12",
-    "backgroundColor": "#ffffff",
+    "color": "#74665F",
+    "selectedColor": "#6D2434",
+    "backgroundColor": "#FFFCF6",
+    "borderStyle": "white",
     "list": [
-      { "pagePath": "pages/home/index", "text": "首页" },
-      { "pagePath": "pages/mine/index", "text": "我的" }
+      { "pagePath": "pages/home/index", "text": "首页", "iconPath": "assets/tabs/home.png", "selectedIconPath": "assets/tabs/home-active.png" },
+      { "pagePath": "pages/mine/index", "text": "我的", "iconPath": "assets/tabs/mine.png", "selectedIconPath": "assets/tabs/mine-active.png" }
     ]
   }
 }

@@ -1,6 +1,5 @@
+import { developAccountInfo, isolatedRequest, nativePages } from '../test-support/native-page.mjs';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import vm from 'node:vm';
 import test from 'node:test';
 import { createAppServer } from '../server.mjs';
 
@@ -15,38 +14,17 @@ test('小程序真实页面逻辑完成恢复码找回、后台重置后强制�
   const wx = {
     getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, value), removeStorageSync: key => storage.delete(key),
     switchTab: ({ url }) => { destination = url; }, reLaunch: ({ url }) => { destination = url; }, showToast() {},
-    request({ url, method, data, header, success, fail }) {
-      fetch(url, { method, headers: header, body: method === 'POST' ? JSON.stringify(data) : undefined })
-        .then(async response => success({ statusCode: response.status, data: await response.json() })).catch(fail);
-    },
+    request: isolatedRequest(base), getAccountInfoSync: developAccountInfo,
   };
-  const clientModule = { exports: {} };
-  const clientSource = readFileSync(new URL('../miniprogram/client.js', import.meta.url), 'utf8').replace('http://127.0.0.1:7101/api', base);
-  vm.runInNewContext(clientSource, { wx, getApp: () => app, module: clientModule });
-  const makeLogin = () => {
-    let page;
-    vm.runInNewContext(readFileSync(new URL('../miniprogram/pages/login/index.js', import.meta.url), 'utf8'), {
-      wx, getApp: () => app, require: () => clientModule.exports, Page: value => { page = value; },
-    });
-    page.setData = updates => Object.assign(page.data, updates);
-    return page;
-  };
+  const runtime = { app, wx, networkConfig: { apiBase: base } };
+  const makeLogin = () => nativePages(runtime).page('login');
   const event = (value, type) => ({ detail: { value }, currentTarget: { dataset: { type } } });
   const login = makeLogin();
   login.toggle();
   await login.submit(event({ phone: '19900007701', password: 'original-password', confirm: 'original-password' }));
   assert.ok(app.globalData.token);
   assert.equal(destination, '/pages/home/index');
-  const pageModule = { exports: {} };
-  const boardModule = { exports: {} };
-  vm.runInNewContext(readFileSync(new URL('../miniprogram/sales-board.js', import.meta.url), 'utf8'), {
-    getApp: () => app, require: () => clientModule.exports, module: boardModule,
-  });
-  vm.runInNewContext(readFileSync(new URL('../miniprogram/page.js', import.meta.url), 'utf8'), {
-    wx, getApp: () => app, require: name => name === './sales-board' ? boardModule.exports : clientModule.exports, module: pageModule,
-  });
-  const mine = pageModule.exports(false);
-  mine.setData = updates => Object.assign(mine.data, updates);
+  const mine = nativePages(runtime).create(false);
   await mine.onShow();
   mine.toggleSecurity();
   await mine.submitSecurity(event({ currentPassword: 'original-password' }, 'code'));

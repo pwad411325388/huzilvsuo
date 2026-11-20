@@ -1,5 +1,5 @@
 {
-  "appid": "touristappid",
+  "appid": "wx89e1c7636baf2ec7",
   "projectname": "huzilvsuo",
   "compileType": "miniprogram",
   "miniprogramRoot": "miniprogram/",
@@ -49,5 +49,6 @@
     "ignore": [],
     "include": []
   },
-  "editorSetting": {}
+  "editorSetting": {},
+  "libVersion": "3.18.0"
 }

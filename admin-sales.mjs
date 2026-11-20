@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
-import { hasSigningEvidence as signingEvidence, classifyCase as classify } from './data-semantics.mjs';
+import { createSigningEvidence } from './signing-evidence.mjs';
+import { createLeadSigningScope, currentRelatedCases, resolveCaseProgress, resolveLeadProgress } from './lead-progress.mjs';
+import { summarizeProgress } from './board-progress.mjs';
+import { recordDate as date } from './user-records.mjs';
 import { compareAccounts, compareRecent, comparePending, compareSalesSummary, compareSourceSummary, orderLabels } from './web/list-order.js';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const normalize = value => String(value || '').normalize('NFKC').trim().toLocaleLowerCase('zh-CN');
-const dateFormat = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' });
 const limit = 20;
 const titles = { channels: '来源渠道', records: '留资与历史登记', customers: '客户档案', ongoing: '在办案件',
   closed: '已结案件', unknown: '进度待核记录', other: '其他进度记录' };
@@ -21,28 +23,20 @@ const caseFilters = [['ongoing', '在办'], ['closed', '已结案'], ['unknown',
 const column = (key, label, width = 20) => ({ key, label, width });
 const recordColumns = [column('number', '记录编号'), column('title', '客户'), column('phone', '电话'), column('stockName', '股票'),
   column('stockCode', '股票代码'), column('source', '来源渠道'), column('sales', '销售'), column('registeredOn', '登记日期'),
-  column('followStatus', '跟进状态'), column('caseStatus', '案件进度'), column('originLabel', '数据来源')];
+  column('assignmentStatus', '分配 / 关联状态'), column('caseStatus', '案件进度'), column('originLabel', '数据来源')];
 const reportColumns = {
   records: recordColumns,
   cases: [column('number', '案件 / 登记编号'), ...recordColumns.slice(1, 8), column('caseStatus', '案件进度'), column('originLabel', '数据来源')],
   customers: [column('title', '客户'), column('phone', '电话'), column('subtitle', '股票线索', 42), column('source', '来源渠道', 26),
-    column('sales', '销售'), column('registeredOn', '最近登记日期'), column('recordCount', '记录数'), column('status', '资料状态'), column('originLabel', '数据来源')],
+    column('sales', '销售'), column('registeredOn', '最近登记日期'), column('recordCount', '记录数'), column('caseStatus', '案件进度'), column('status', '资料状态'), column('originLabel', '数据来源')],
   signed: [column('title', '客户'), column('phone', '电话'), column('subtitle', '股票线索', 42), column('source', '来源渠道', 26),
-    column('sales', '销售'), column('registeredOn', '最近登记日期'), column('signedOn', '实际签约日期'), column('recordCount', '记录数'), column('status', '签约状态')],
+    column('sales', '销售'), column('registeredOn', '最近登记日期'), column('signedOn', '实际签约日期'), column('recordCount', '记录数'), column('caseStatus', '案件进度')],
   channels: [column('title', '来源渠道', 26), column('sales', '对应销售', 30), column('recordCount', '留资与登记数'),
     column('customerCount', '客户档案数'), column('ongoing', '在办案件'), column('closed', '已结案件'), column('registeredOn', '最近登记 / 合作日期'),
     column('status', '渠道类型'), column('originLabel', '数据来源')],
   sales: [column('name', '销售'), column('status', '账号状态'), column('channelCount', '来源渠道数'), column('recordCount', '留资与登记数'),
     column('customerCount', '客户档案数'), column('ongoing', '在办案件'), column('closed', '已结案件'), column('unknown', '进度待核'), column('other', '其他进度')],
 };
-
-function date(value) {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}(?:$|T)/.test(value)) return '';
-  const parsed = new Date(value);
-  if (!Number.isFinite(parsed.valueOf())) return '';
-  if (value.length === 10) return parsed.toISOString().slice(0, 10) === value ? value : '';
-  return dateFormat.format(parsed);
-}
 
 function personPair(name, phone) {
   const fullName = normalize(name), fullPhone = String(phone || '').normalize('NFKC').trim();
@@ -74,7 +68,7 @@ const mixedOrigin = rows => new Set(rows.map(row => row.origin)).size > 1 ? 'mix
 const notes = [
   '来源渠道包括合作券商和客户登记来源，同一来源可涉及多位销售；历史来源不会自动开通券商账号。',
   '客户按身份或完整姓名、手机号核对合并；资料不完整的历史登记暂按独立档案计数，各销售档案数不能直接相加。',
-  '历史表未提供销售跟进记录，单列为跟进待核；案件仅按明确进度统计，最新公司同步状态优先。',
+  '案件仅按明确进度统计，最新公司同步状态优先。',
 ];
 
 // Keep the imported snapshot as the source of truth: this model never creates
@@ -101,6 +95,7 @@ export function createAdminSales(db, { requireValue, transaction, today }) {
 
   function load() {
     const currentDay = today();
+    const signingEvidence = createSigningEvidence(db);
     const visible = value => !value || value <= currentDay;
     const staff = all(`SELECT s.id,s.name,i.status AS accountStatus,i.username FROM sales_staff s
       LEFT JOIN identities i ON i.role='sales' AND i.subjectId=s.id
@@ -110,41 +105,54 @@ export function createAdminSales(db, { requireValue, transaction, today }) {
     const brokers = all(`SELECT b.id,b.name,b.salesId,b.signedOn,COALESCE(i.status,'pending') AS accountStatus FROM brokers b
       LEFT JOIN identities i ON i.role='broker' AND i.subjectId=b.id`).filter(row => visible(date(row.signedOn)));
     const assignmentColumns = new Set(all('PRAGMA table_info(lead_assignments)').map(row => row.name));
-    const records = all(`SELECT l.id,l.clientId,l.stockName,l.stockCode,l.createdAt,
+    const progressColumns = new Set(all('PRAGMA table_info(company_record_progress)').map(row => row.name));
+    const testingField = progressColumns.has('testing') ? 'p.testing' : '0';
+    const completedField = progressColumns.has('completed_nodes') ? 'p.completed_nodes' : "'[]'";
+    const hasSignings = exists('signings');
+    const leadRows = all(`SELECT l.id,l.clientId,l.stockName,l.stockCode,l.createdAt,
       COALESCE(a.contactName,c.name) AS customer,COALESCE(a.contactPhone,c.phone) AS phone,
       a.salesId,i.status AS salesStatus,a.version,b.name AS source,n.number AS recordNumber,
       investor.subjectId AS investorId,${assignmentColumns.has('legacy') ? 'a.legacy' : '0'} AS legacy,
-      EXISTS(SELECT 1 FROM lead_followups f WHERE f.leadId=l.id AND f.assignmentVersion=a.version) AS followed
+      p.record_id AS hasSnapshot,p.stage AS progressStage,p.node AS progressNode,${testingField} AS testing,
+      ${completedField} AS completedNodes,${hasSignings ? 's.signedOn' : "''"} AS signedOn
       FROM leads l JOIN clients c ON c.id=l.clientId LEFT JOIN lead_assignments a ON a.leadId=l.id
       LEFT JOIN brokers b ON b.id=c.brokerId LEFT JOIN identities i ON i.role='sales' AND i.subjectId=a.salesId
       LEFT JOIN identities investor ON investor.role='investor' AND investor.subjectId=c.id
-      LEFT JOIN report_numbers n ON n.kind='lead' AND n.subjectId=l.id`).map(row => ({
+      LEFT JOIN company_record_progress p ON p.kind='lead' AND p.record_id=l.id
+      ${hasSignings ? 'LEFT JOIN signings s ON s.clientId=c.id' : ''}
+      LEFT JOIN report_numbers n ON n.kind='lead' AND n.subjectId=l.id`);
+    const records = leadRows.map(row => ({
       internalId: row.id, id: hash('lead:' + row.id), number: row.recordNumber ? `LZ-${String(row.recordNumber).padStart(6, '0')}` : '系统留资',
       title: row.customer || '待留资客户', phone: row.phone || '', stockName: row.stockName, stockCode: row.stockCode,
       source: row.source || '自然流入', sourceKey: sourceKey(row.source || '自然流入'), origin: 'system',
       salesId: row.salesId || '__unassigned__', sales: staffById.get(row.salesId)?.name || '待分配',
       registeredOn: date(row.createdAt), identity: row.investorId || '', clientId: row.clientId,
-      followStatus: !row.salesId || row.salesStatus !== 'active' ? '待分配' : row.followed ? '已跟进' : '待跟进',
+      assignmentStatus: !row.salesId || row.salesStatus !== 'active' ? '待分配' : '已分配',
       caseStatus: '尚未建案', caseGroup: 'other', recordCount: 1, _legacy: !!row.legacy,
     })).filter(row => visible(row.registeredOn));
     const liveById = new Map(records.map(row => [row.internalId, row]));
-    const cases = all(`SELECT k.id,k.leadId,k.title,k.openedOn,k.status AS rawStatus,n.number AS recordNumber,
-      p.record_id AS hasSnapshot,p.stage AS progressStage,p.node AS progressNode
-      FROM cases k LEFT JOIN case_numbers n ON n.caseId=k.id
-      LEFT JOIN company_record_progress p ON p.kind='case' AND p.record_id=k.id`).flatMap(row => {
-      const lead = liveById.get(row.leadId);
-      if (!lead || !visible(date(row.openedOn))) return [];
-      return [{ ...lead, id: hash('case:' + row.id), number: row.recordNumber ? `AJ-${String(row.recordNumber).padStart(6, '0')}` : '系统案件',
-        subtitle: row.title, openedOn: date(row.openedOn), ...classify(row) }];
-    });
+    const leadProgressById = new Map(leadRows.map(row => [row.id,row]));
     const casesByLead = new Map();
-    for (const item of cases) {
-      if (!casesByLead.has(item.internalId)) casesByLead.set(item.internalId, []);
-      casesByLead.get(item.internalId).push(item);
-    }
+    const caseRows = currentRelatedCases(all(`SELECT k.id,k.leadId,k.title,k.openedOn,k.status AS rawStatus,n.number AS recordNumber,
+      p.record_id AS hasSnapshot,p.stage AS progressStage,p.node AS progressNode,${testingField} AS testing,
+      ${completedField} AS completedNodes
+      FROM cases k LEFT JOIN case_numbers n ON n.caseId=k.id
+      LEFT JOIN company_record_progress p ON p.kind='case' AND p.record_id=k.id`),currentDay);
+    const cases = caseRows.flatMap(row => {
+      const lead = liveById.get(row.leadId);
+      if (!lead) return [];
+      if (!casesByLead.has(row.leadId)) casesByLead.set(row.leadId, []);
+      casesByLead.get(row.leadId).push(row);
+      const progress = resolveCaseProgress(row,'sales',currentDay);
+      return [{ ...lead, id: hash('case:' + row.id), number: row.recordNumber ? `AJ-${String(row.recordNumber).padStart(6, '0')}` : '系统案件',
+        subtitle: row.title, openedOn: row.openedOn, caseStatus: progress.status, caseGroup: progress.caseGroup }];
+    });
+    const signingScope = createLeadSigningScope(db);
     for (const row of records) {
-      const related = casesByLead.get(row.internalId) || [];
-      if (related.length) row.caseStatus = [...new Set(related.map(item => item.caseStatus))].join('、');
+      const original = leadProgressById.get(row.internalId);
+      const progress = resolveLeadProgress({...original,signingMatch:signingScope(original,currentDay)},
+        casesByLead.get(row.internalId) || [],'sales',currentDay);
+      row.caseStatus = progress.status; row.caseGroup = progress.caseGroup;
     }
     const meta = { registryTotal: 0, registryLinked: 0, registryUnlinked: 0, registrySourceTotal: 0, futureRegistryCount: 0,
       importedAt: '', sourceName: '' };
@@ -152,9 +160,10 @@ export function createAdminSales(db, { requireValue, transaction, today }) {
       const columns = new Set(all('PRAGMA table_info(registry_entries)').map(row => row.name));
       const extra = name => columns.has(name) ? `e.${name}` : "''";
       const imported = all(`SELECT e.entry_key,e.source_row,e.customer,e.phone,e.stock_name,e.stock_code,e.source,e.sales,
-        e.registered_on,e.stage AS rawStatus,seller.subjectId AS salesId,seller.status AS salesStatus,investor.subjectId AS investorId,
+        e.registered_on,${extra('filed_on')} AS filedOn,e.stage AS rawStatus,seller.subjectId AS salesId,seller.status AS salesStatus,investor.subjectId AS investorId,
         p.record_id AS hasSnapshot,COALESCE(p.stage,${extra('progress_stage')}) AS progressStage,
-        COALESCE(p.node,${extra('progress_node')}) AS progressNode
+        COALESCE(p.node,${extra('progress_node')}) AS progressNode,${completedField} AS completedNodes,${testingField} AS testing,
+        ${extra('progress_stage')} AS sourceProgressStage,${extra('progress_node')} AS sourceProgressNode
         FROM registry_entries e LEFT JOIN registry_links l ON l.type='sales' AND l.source_name=e.sales AND l.source_phone=''
         LEFT JOIN identities seller ON seller.id=l.identity_id AND seller.role='sales'
         LEFT JOIN registry_links il ON il.type='investor' AND il.source_name=e.customer AND il.source_phone=e.phone
@@ -166,12 +175,14 @@ export function createAdminSales(db, { requireValue, transaction, today }) {
         meta.registryTotal++;
         const linked = row.salesId && staffById.has(row.salesId);
         if (linked) meta.registryLinked++; else meta.registryUnlinked++;
+        const progress = resolveCaseProgress(row,'sales',currentDay);
         const item = { id: hash('registry:' + row.entry_key), number: `DJ-${String(row.source_row).padStart(6, '0')}`,
           title: row.customer || '股民姓名待核对', phone: row.phone || '', stockName: row.stock_name || '', stockCode: row.stock_code || '',
           source: row.source || '来源待核对', sourceKey: sourceKey(row.source), origin: 'registry',
           salesId: linked ? row.salesId : '__unlinked__', sales: linked ? staffById.get(row.salesId).name : row.sales || '销售待核对',
-          registeredOn: date(row.registered_on), identity: row.investorId || '', clientId: '', followStatus: '跟进待核',
-          recordCount: 1, _needsAssociation: !linked || row.salesStatus !== 'active', _signed: signingEvidence(row), ...classify(row) };
+          registeredOn: date(row.registered_on), identity: row.investorId || '', clientId: '', assignmentStatus: !linked || row.salesStatus !== 'active' ? '待关联 / 调整' : '已关联',
+          recordCount: 1, _needsAssociation: !linked || row.salesStatus !== 'active', _signed: signingEvidence('registry',row.entry_key,row,currentDay),
+          caseStatus: progress.status, caseGroup: progress.caseGroup };
         records.push(item); cases.push(item);
       }
       if (exists('registry_meta')) {
@@ -205,6 +216,7 @@ export function createAdminSales(db, { requireValue, transaction, today }) {
         sales: platform ? [...new Set(rows.map(row => row.sales))].join('、') : preferred.sales,
         registeredOn: rows.map(row => row.registeredOn).sort().at(-1) || '', recordCount: rows.length,
         status: rows.some(row => row.unverified) ? '资料待核对' : '身份资料完整',
+        caseStatus: summarizeProgress(rows.map(row => row.caseStatus)),
         unverified: rows.some(row => row.unverified),
         searchText: rows.map(searchText).join('\n') };
     });
@@ -258,9 +270,7 @@ export function createAdminSales(db, { requireValue, transaction, today }) {
           return { id: sales.id, name: sales.name, status: sales.accountStatus === 'closed' ? '已注销' : sales.username ? '正常' : '待开户',
             channelCount: sources.length, channelCustomers: new Set(records.filter(row => row.sourceKey !== '__unknown__').map(row => row.personKey)).size,
             recordCount: records.length, customerCount: clients.length,
-            pending: records.filter(row => row.followStatus === '待跟进').length, followed: records.filter(row => row.followStatus === '已跟进').length,
-            followUnknown: records.filter(row => row.origin === 'registry').length,
-            unassignedCount: records.filter(row => row.followStatus === '待分配').length,
+            unassignedCount: records.filter(row => row.assignmentStatus === '待分配').length,
             ongoing: cases.filter(row => row.caseGroup === 'ongoing').length, closed: cases.filter(row => row.caseGroup === 'closed').length,
             unknownCaseCount: cases.filter(row => row.caseGroup === 'unknown').length, otherCaseCount: cases.filter(row => row.caseGroup === 'other').length,
             systemRecordCount: records.filter(row => row.origin === 'system').length, registryRecordCount: records.filter(row => row.origin === 'registry').length,
@@ -318,6 +328,7 @@ export function createAdminSales(db, { requireValue, transaction, today }) {
   }
 
   function attachSigningEvidence(data, currentDay) {
+    const signingEvidence = createSigningEvidence(db);
     const known = exists('signings') ? new Map(all('SELECT clientId,signedOn FROM signings').flatMap(row => {
       const signedOn = date(row.signedOn);
       return signedOn && signedOn <= currentDay ? [[row.clientId, signedOn]] : [];
@@ -331,7 +342,7 @@ export function createAdminSales(db, { requireValue, transaction, today }) {
     const recordsById = new Map(data.records.map(row => [row.id, row]));
     const casesById = new Map(data.cases.filter(row => row.origin === 'system').map(row => [row.id, row]));
     for (const snapshot of snapshots) {
-      if (!signingEvidence(snapshot)) continue;
+      if (!signingEvidence(snapshot.kind,snapshot.record_id,snapshot,currentDay)) continue;
       const record = snapshot.kind === 'case' ? recordsById.get(hash('lead:' + (casesById.get(hash('case:' + snapshot.record_id))?.internalId || '')))
         : recordsById.get(hash((snapshot.kind === 'lead' ? 'lead:' : 'registry:') + snapshot.record_id));
       if (record) record._signed = true;
@@ -343,7 +354,8 @@ export function createAdminSales(db, { requireValue, transaction, today }) {
       // A platform customer is resolved globally, never by adding sales subtotals.
       resolvePeople(data.records);
       attachSigningEvidence(data, f.today);
-      const signedIds = new Set(data.records.filter(row => row._signed).map(row => hash(row.personKey)));
+      const selectedSales = row => !extra.salesId || row.salesId === extra.salesId;
+      const signedIds = new Set(data.records.filter(row => row._signed && selectedSales(row)).map(row => hash(row.personKey)));
       const signingDates = new Map();
       for (const row of data.records.filter(row => row.signedOn)) {
         const id = hash(row.personKey);
@@ -351,17 +363,13 @@ export function createAdminSales(db, { requireValue, transaction, today }) {
       }
       const included = value => value ? value <= f.to && (!f.from || value >= f.from) : f.period === 'all';
       const signedPerson = row => signedIds.has(hash(row.personKey));
-      const selectedSales = row => !extra.salesId || row.salesId === extra.salesId;
       const selectedOrigin = row => !extra.origin || extra.origin === 'all' || row.origin === extra.origin;
       const selectedSource = row => matchesSource(row, extra.sourceKey);
       let records = data.records.filter(row => included(row.registeredOn) && selectedSales(row) && selectedOrigin(row) && selectedSource(row));
       let cases = data.cases.filter(row => included(row.registeredOn) && selectedSales(row) && selectedOrigin(row) && selectedSource(row));
       if (caseFilters.some(([key]) => key === extra.status)) {
-        const allLiveIds = new Set(cases.filter(row => row.origin === 'system').map(row => row.internalId));
         cases = cases.filter(row => row.caseGroup === extra.status);
-        const liveIds = new Set(cases.filter(row => row.origin === 'system').map(row => row.internalId));
-        records = records.filter(row => row.origin === 'registry' ? row.caseGroup === extra.status
-          : liveIds.has(row.internalId) || extra.status === 'other' && !allLiveIds.has(row.internalId));
+        records = records.filter(row => row.caseGroup === extra.status);
       } else if (['signed', 'unsigned'].includes(extra.status)) {
         records = records.filter(row => signedPerson(row) === (extra.status === 'signed'));
         const recordIds = new Set(records.map(row => row.id)), liveIds = new Set(records.filter(row => row.origin === 'system').map(row => row.internalId));
@@ -369,12 +377,12 @@ export function createAdminSales(db, { requireValue, transaction, today }) {
       }
       const clients = customers(records, true);
       const byQueue = {
-        system_new: records.filter(row => row.origin === 'system' && row.followStatus === '待分配' && !row._legacy),
-        system_legacy: records.filter(row => row.origin === 'system' && row.followStatus === '待分配' && row._legacy),
+        system_new: records.filter(row => row.origin === 'system' && row.assignmentStatus === '待分配' && !row._legacy),
+        system_legacy: records.filter(row => row.origin === 'system' && row.assignmentStatus === '待分配' && row._legacy),
         registry_unlinked: records.filter(row => row.origin === 'registry' && row._needsAssociation),
       };
       const pending = Object.entries(byQueue).flatMap(([queue, rows]) => rows.map(row => ({ ...row, queue,
-        status: queue === 'registry_unlinked' ? '待关联 / 调整销售' : row.followStatus })));
+        status: queue === 'registry_unlinked' ? '待关联 / 调整销售' : row.assignmentStatus })));
       const brokers = data.brokers.filter(row => included(date(row.signedOn)) && selectedSales(row) &&
         extra.origin !== 'registry' && selectedSource({ sourceKey: sourceKey(row.name) }) && (!extra.status || extra.status === 'all'));
       const collections = {
@@ -393,7 +401,7 @@ export function createAdminSales(db, { requireValue, transaction, today }) {
       '当前测试按留资 / 材料登记日期筛选，签约和案件展示当前状态；正式上线将按各业务实际发生日期统计。',
       '统计包含小程序业务及全部历史登记，包括尚未关联销售的登记；客户档案在全平台合并核对，缺资料的记录保留独立档案。',
       '来源渠道包含合作券商和历史来源分类；案件仅按明确进度计数，不将未确认进度视为在办。',
-      '历史登记没有完整签约信息，已签约仅采用实际签约记录或公司明确同步的签约状态。',
+      '已签约包含历史记录中已立案及后续阶段的客户；同一客户合并计数，未立案或状态不明的不据此推定签约，缺失的实际签约日期留空。',
     ];
     if (unknownDateCount) rows.push(`${unknownDateCount} 条记录缺少有效登记日期，仅计入全部累计。`);
     return rows;

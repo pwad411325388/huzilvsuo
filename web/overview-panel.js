@@ -1,5 +1,3 @@
-import { orderLabels } from './list-order.js';
-
 const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const display = value => escape(value === '' || value == null ? '—' : value);
 const metricLabels = { records: '留资与登记', customers: '客户档案', channels: '来源渠道', pending: '待分配 / 关联', ongoing: '在办案件', closed: '已结案件', registry: '历史登记', signed: '已签约档案' };
@@ -12,10 +10,17 @@ const table = (headers, rows) => rows.length ? `<div class="table-wrap"><table><
 const origin = row => `<span class="tag">${escape(originLabels[row.origin] || row.origin || '—')}</span>`;
 const wrap = value => `<span class="wrap-cell">${display(value)}</span>`;
 const notes = values => (values || []).map(value => `<p class="muted">${escape(value)}</p>`).join('');
+const actionNote = note => /缺少有效登记日期|登记日期晚于今天|未来日期|请.*核对/.test(note);
+function dataNotes(data, extra = '') {
+  const values = data.notes || [], guidance = values.filter(note => !actionNote(note));
+  return notes(values.filter(actionNote)) +
+    (data.meta?.futureRegistryCount ? `<p class="muted">另有 ${escape(data.meta.futureRegistryCount)} 条登记日期晚于今天，暂未计入统计，请核对日期。</p>` : '') +
+    (extra || guidance.length ? `<details class="panel"><summary>数据说明</summary>${extra}${notes(guidance)}</details>` : '');
+}
 const validDate = value => /^\d{4}-\d{2}-\d{2}$/.test(value || '') && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 
 function scopeLabel(state, data) {
-  if (state.period === 'all') return '累计全部数据（含历史同步）';
+  if (state.period === 'all') return '全部时间';
   if (state.period === 'month') return data ? `本月：${data.from} 至 ${data.to}` : '本月（截至今天）';
   return `自选日期：${state.from} 至 ${state.to}`;
 }
@@ -30,16 +35,15 @@ export function renderOverviewControls(state, data, { today = '', dateError = ''
       <label class="field"><span>结束日期</span><input type="date" name="to" value="${escape(state.draftTo)}"${today ? ` max="${escape(today)}"` : ''}></label>
       <button class="${state.period === 'custom' ? 'primary' : 'secondary'}">按日期查看</button>
     </form>${dateError ? `<p class="overview-error" role="alert">${escape(dateError)}</p>` : ''}
-    <p class="overview-scope" data-overview-scope>${escape(scopeLabel(state, data))}</p>
-    <p class="muted">测试阶段按留资 / 材料登记日期筛选，展示当前状态；签约、结案不代表在所选期间发生。</p>`);
+    <p class="overview-scope" data-overview-scope>${escape(scopeLabel(state, data))}</p>`);
 }
 
 function recordTable(items, metric = 'records') {
   const records = ['records', 'registry', 'pending'].includes(metric);
-  return table(['记录编号', '客户 / 联系电话', '股票 / 代码', '来源渠道', '销售', '登记日期', ...(metric === 'pending' ? ['待处理事项'] : []), ...(records ? ['跟进状态', '案件进度'] : ['当前进度']), '数据来源'], items.map(row => [
+  return table(['记录编号', '客户 / 联系电话', '股票 / 代码', '来源渠道', '销售', '登记日期', ...(records ? [metric === 'pending' ? '待处理事项' : '分配 / 关联状态'] : []), '案件进度', '数据来源'], items.map(row => [
     display(row.number), `${wrap(row.title)}<small>${display(row.phone)}</small>`, `${wrap(row.stockName || row.subtitle)}<small>${display(row.stockCode)}</small>${!records && row.subtitle && row.stockName ? `<small class="wrap-cell">${escape(row.subtitle)}</small>` : ''}`,
-    wrap(row.source), wrap(row.sales), display(row.registeredOn), ...(metric === 'pending' ? [display(row.status)] : []),
-    ...(records ? [display(row.followStatus), display(row.caseStatus || row.status)] : [display(row.caseStatus || row.status)]), origin(row),
+    wrap(row.source), wrap(row.sales), display(row.registeredOn), ...(records ? [display(metric === 'pending' ? row.status : row.assignmentStatus)] : []),
+    display(records ? row.caseStatus : row.caseStatus || row.status), origin(row),
   ]));
 }
 
@@ -47,13 +51,12 @@ export function renderOverviewSummary(data) {
   if (!data) return '';
   const cards = `<div class="overview-cards">${data.metrics.map(row => `<button type="button" class="stat-card" data-overview-action="metric" data-metric="${escape(row.key)}" aria-label="${escape(row.label)} ${escape(row.value)} ${escape(row.unit)}，查看明细"><strong data-overview-value="${escape(row.key)}">${escape(row.value)}<small>${escape(row.unit)}</small></strong><span>${escape(row.label)}</span><small class="stat-link">查看明细 →</small></button>`).join('')}</div>`;
   const queueNotes = { system_new: '核对券商绑定销售或股票公司负责人。', system_legacy: '确认小程序历史留资的经办人。', registry_unlinked: '核对登记表中的销售资料与账号关联。' };
-  const queues = panel('需要处理', `<p>以下数量与上方统计期间一致。</p><p class="muted" data-order-label>排序：${escape(data.queueOrderLabel || orderLabels.pending)}</p><div class="action-grid overview-queues">${data.queues.map(row => `<div><strong>${escape(row.value)} ${escape(row.unit)}${escape(row.label)}</strong><p>${escape(queueNotes[row.key] || '')}</p>${button('queue', '查看明细', `data-queue="${escape(row.key)}"`)}</div>`).join('')}</div>`);
+  const queues = panel('需要处理', `<div class="action-grid overview-queues">${data.queues.map(row => `<div><strong>${escape(row.value)} ${escape(row.unit)}${escape(row.label)}</strong><p>${escape(queueNotes[row.key] || '')}</p>${button('queue', '查看明细', `data-queue="${escape(row.key)}"`)}</div>`).join('')}</div>`);
   const meta = data.meta || {};
   const sourceTotal = meta.registrySourceTotal ?? meta.registryTotal;
   const source = meta.sourceName ? `<p>源台账：${escape(meta.sourceName)}${Number.isInteger(sourceTotal) ? `（源台账共 ${escape(sourceTotal)} 条）` : ''}</p>` : '';
   const withinRange = Number.isInteger(meta.systemRecordCount) && Number.isInteger(meta.registryCount) ? `<p>当前期间：小程序 ${escape(meta.systemRecordCount)} 条，历史登记 ${escape(meta.registryCount)} 条。</p>` : '';
-  return cards + queues + panel('最近登记', `<p>当前期间最近 6 条留资与历史登记。</p><p class="muted" data-order-label>排序：${escape(data.recentOrderLabel || orderLabels.recent)}</p>` + recordTable(data.recent)) +
-    panel('统计说明', source + withinRange + notes(data.notes));
+  return cards + queues + panel('最近登记', recordTable(data.recent)) + dataNotes(data, source + withinRange);
 }
 
 export function renderOverviewDetails(data, state) {
@@ -68,8 +71,8 @@ export function renderOverviewDetails(data, state) {
   if (state.metric === 'channels') rows = table(['来源渠道', '来源类型', '留资与登记', '客户档案', '最近登记日期'], data.items.map(row => [
     `${wrap(row.title || row.name)}<small>${display(row.status)}</small>`, origin(row), `${escape(row.recordCount ?? 0)} 条`, `${escape(row.customerCount ?? 0)} 份`, display(row.registeredOn),
   ]));
-  else if (['customers', 'signed'].includes(state.metric)) rows = table(['客户', '联系电话', '股票与登记', '来源渠道', '销售', '登记日期', ...(state.metric === 'signed' ? ['实际签约日期'] : []), '数据来源'], data.items.map(row => [
-    `${wrap(row.title)}${row.status ? `<small>${escape(row.status)}</small>` : ''}`, display(row.phone), `${wrap(row.subtitle)}<small>${escape(row.recordCount ?? 0)} 条登记</small>`, wrap(row.source), wrap(row.sales), display(row.registeredOn), ...(state.metric === 'signed' ? [display(row.signedOn)] : []), origin(row),
+  else if (['customers', 'signed'].includes(state.metric)) rows = table(['客户', '联系电话', '股票与登记', '案件进度', '来源渠道', '销售', '登记日期', ...(state.metric === 'signed' ? ['实际签约日期'] : []), '数据来源'], data.items.map(row => [
+    `${wrap(row.title)}${state.metric !== 'signed' && row.status ? `<small>${escape(row.status)}</small>` : ''}`, display(row.phone), `${wrap(row.subtitle)}<small>${escape(row.recordCount ?? 0)} 条登记</small>`, display(row.caseStatus || '进度待核对'), wrap(row.source), wrap(row.sales), display(row.registeredOn), ...(state.metric === 'signed' ? [display(row.signedOn)] : []), origin(row),
   ]));
   else rows = recordTable(data.items, state.metric);
   const selected = data.metrics.find(row => row.key === state.metric);
@@ -77,7 +80,7 @@ export function renderOverviewDetails(data, state) {
   const unit = selected?.unit || metricUnits[state.metric];
   const page = Math.floor(data.offset / data.limit) + 1, pages = Math.max(1, Math.ceil(data.total / data.limit));
   const pager = `<nav class="list-pagination" aria-label="总览明细分页">${button('page', '上一页', `data-offset="${Math.max(0, data.offset - data.limit)}"${data.offset === 0 ? ' disabled' : ''}`)}<span>第 ${page} / ${pages} 页 · 每页 ${escape(data.limit)} 条</span>${button('page', '下一页', `data-offset="${data.offset + data.limit}"${data.offset + data.limit >= data.total ? ' disabled' : ''}`)}</nav>`;
-  return panel('', controls + `<p class="overview-count muted" data-overview-count aria-live="polite">当前范围 ${escape(scopeTotal ?? data.total)} ${escape(unit)} · 检索结果 ${escape(data.total)} ${escape(unit)}</p><p class="muted" data-order-label>排序：${escape(data.orderLabel || (state.metric === 'channels' ? orderLabels.sources : state.metric === 'pending' ? orderLabels.pending : orderLabels.recent))}</p>` + rows + pager) + (data.notes?.length ? panel('统计说明', notes(data.notes)) : '');
+  return panel('', controls + `<p class="overview-count muted" data-overview-count aria-live="polite">当前范围 ${escape(scopeTotal ?? data.total)} ${escape(unit)} · 检索结果 ${escape(data.total)} ${escape(unit)}</p>` + rows + pager) + dataNotes(data);
 }
 
 function initialFilters(value) {

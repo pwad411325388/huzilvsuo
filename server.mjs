@@ -17,9 +17,11 @@ const assets = {
   '/admin': ['app-shell.html', 'text/html'],
   '/admin/': ['app-shell.html', 'text/html'],
   '/app.js': ['app.js', 'text/javascript'],
+  '/home-card.js': ['home-card.js', 'text/javascript'],
   '/report.js': ['report.js', 'text/javascript'],
   '/analytics.js': ['analytics.js', 'text/javascript'],
   '/list-order.js': ['list-order.js', 'text/javascript'],
+  '/user-records-panel.js': ['user-records-panel.js', 'text/javascript'],
   '/operations.js': ['operations.js', 'text/javascript'],
   '/overview-detail.js': ['overview-detail.js', 'text/javascript'],
   '/overview-panel.js': ['overview-panel.js', 'text/javascript'],
@@ -29,8 +31,13 @@ const assets = {
   '/broker-accounts.js': ['broker-accounts.js', 'text/javascript'],
   '/registry-panel.js': ['registry-panel.js', 'text/javascript'],
   '/admin-sales-panel.js': ['admin-sales-panel.js', 'text/javascript'],
+  '/admin-progress-test-panel.js': ['admin-progress-test-panel.js', 'text/javascript'],
   '/broker-accounts.css': ['broker-accounts.css', 'text/css'],
   '/app.css': ['app.css', 'text/css'],
+  '/assets/promo-placeholder.png': ['assets/promo-placeholder.png', 'image/png'],
+  '/assets/home-investor.png': ['../miniprogram/assets/home-investor.png', 'image/png'],
+  '/assets/home-sales.png': ['../miniprogram/assets/home-sales.png', 'image/png'],
+  '/assets/home-broker.png': ['../miniprogram/assets/home-broker.png', 'image/png'],
 };
 const directSession = { name: 'huzi_session', path: '/' };
 const adminSession = { name: 'huzi_pc', path: '/api/admin', audience: 'admin' };
@@ -58,6 +65,16 @@ function readSession(request, session) {
 function checkAudience(role, session) {
   if (session.audience === 'admin' && role !== 'admin') throw new RequestError(403, '请使用运营后台管理员账号登录');
   if (session.audience === 'business' && role === 'admin') throw new RequestError(403, '请从运营后台入口登录管理员账号');
+}
+
+export function isLoopbackAddress(address) {
+  return address === '::1' || /^(?:::ffff:)?127\./i.test(address || '');
+}
+
+function requireLocalAdmin(request, role) {
+  if (role === 'admin' && !isLoopbackAddress(request.socket.remoteAddress)) {
+    throw new RequestError(403, '运营后台仅限在服务电脑上访问');
+  }
 }
 
 async function readBody(request) {
@@ -104,9 +121,9 @@ function createXlsx(rows, sheet, reportColumns) {
   return writeExcelFile([headings, ...cells], { sheet, columns: reportColumns.map(({ width }) => ({ width })) }).toBuffer();
 }
 
-export function createAppServer({ database = ':memory:', cutoff, seed = false, admin,
+export function createAppServer({ database = ':memory:', cutoff, seed = false, admin, progressTestEnabled = process.env.LOCAL_PROGRESS_TEST === '1',
   registryFile = process.env.REGISTRY_WORKBOOK || defaultRegistryFile } = {}) {
-  const store = createStore(database, { cutoff, seed, admin });
+  const store = createStore(database, { cutoff, seed, admin, progressTestEnabled });
   let syncingRegistry = false;
   const routes = new Map([
     ['/api/cooperations', ['sales', store.registerBroker]],
@@ -118,7 +135,6 @@ export function createAppServer({ database = ':memory:', cutoff, seed = false, a
     ['/api/profile/name', ['investor', store.renameInvestor]],
     ['/api/scan', ['investor', store.scan]],
     ['/api/leads', ['investor', store.addLead]],
-    ['/api/followups', ['sales', store.addFollowup]],
     ['/api/companies', ['admin', store.saveCompany]],
     ['/api/assignments', ['admin', store.assignLead]],
     ['/api/channels/owner', ['admin', store.changeChannelOwner]],
@@ -127,6 +143,8 @@ export function createAppServer({ database = ':memory:', cutoff, seed = false, a
     ['/api/cases', ['admin', store.saveCase]],
     ['/api/registry/link', ['admin', store.registry.link]],
     ['/api/registry/sales-batch', ['admin', store.registrySalesBatch.apply]],
+    ['/api/progress-test', ['admin', store.adminProgressTest.save]],
+    ['/api/progress-test/restore', ['admin', store.adminProgressTest.restore]],
   ]);
 
   function signIn(request, response, input, register, session) {
@@ -134,6 +152,7 @@ export function createAppServer({ database = ':memory:', cutoff, seed = false, a
     const mini = session === directSession && input.platform === 'mini';
     const pending = mini ? input.referralToken : readCookie(request, referralCookie);
     const account = register ? { id: store.registerInvestor(input, pending), role: 'investor' } : store.verifyLogin(input);
+    requireLocalAdmin(request, account.role);
     if (mini && account.role === 'admin') throw new RequestError(403, '请在 PC 后台登录管理员账号');
     checkAudience(account.role, session);
     if (!register && pending && !account.passwordChangeRequired) store.redeemReferral(account, pending);
@@ -152,6 +171,11 @@ export function createAppServer({ database = ':memory:', cutoff, seed = false, a
     response.setHeader('Referrer-Policy', 'no-referrer');
     try {
       const url = new URL(request.url, 'http://localhost');
+      if (!isLoopbackAddress(request.socket.remoteAddress) &&
+          (url.pathname === '/admin' || url.pathname.startsWith('/admin/') ||
+           url.pathname === '/api/admin' || url.pathname.startsWith('/api/admin/'))) {
+        throw new RequestError(403, '运营后台仅限在服务电脑上访问');
+      }
       if (request.method === 'GET' && Object.hasOwn(assets, url.pathname)) {
         const [file, contentType] = assets[url.pathname];
         response.writeHead(200, { 'Content-Type': `${contentType}; charset=utf-8`, 'Cache-Control': 'no-store',
@@ -163,19 +187,22 @@ export function createAppServer({ database = ':memory:', cutoff, seed = false, a
       }
       const session = apiSession(url.pathname);
       const pathname = session.audience ? `/api${url.pathname.slice(session.path.length)}` : url.pathname;
-      if (request.method === 'GET' && pathname === '/api/health') return json(response, 200, { mode: 'local' });
+      if (request.method === 'GET' && pathname === '/api/health') return json(response, 200,
+        { mode: 'local', ...(process.env.DEMO_STARTUP_ID ? { startupId: process.env.DEMO_STARTUP_ID } : {}) });
       if (!pathname.startsWith('/api/')) throw new RequestError(404, '找不到页面');
       if (request.method === 'POST' && ['/api/auth/login', '/api/auth/register'].includes(pathname)) {
         return signIn(request, response, await readBody(request), pathname === '/api/auth/register', session);
       }
       if (request.method === 'POST' && pathname === '/api/auth/recover') {
-        return json(response, 200, store.recoverPassword(await readBody(request)));
+        return json(response, 200, store.recoverPassword(await readBody(request),
+          { allowAdmin: isLoopbackAddress(request.socket.remoteAddress) }));
       }
       const token = readSession(request, session);
+      const actor = store.getSession(token);
+      if (actor) requireLocalAdmin(request, actor.role);
       if (request.method === 'POST' && pathname === '/api/referral/capture') {
         if (session === adminSession) throw new RequestError(403, '请使用股民端打开推广入口');
         const input = await readBody(request);
-        const actor = store.getSession(token);
         if (actor) {
           if (actor.passwordChangeRequired) throw new RequestError(403, '请先设置新的个人密码');
           if (actor.role !== 'investor') throw new RequestError(403, '请使用股民账号打开推广入口');
@@ -193,7 +220,6 @@ export function createAppServer({ database = ':memory:', cutoff, seed = false, a
         response.setHeader('Set-Cookie', cookieValue(session, '', 0));
         return json(response, 200, { ok: true });
       }
-      const actor = store.getSession(token);
       if (!actor) throw new RequestError(401, '请先登录');
       checkAudience(actor.role, session);
       if (request.method === 'POST' && pathname === '/api/auth/change-password') {
@@ -203,6 +229,12 @@ export function createAppServer({ database = ':memory:', cutoff, seed = false, a
       }
       if (request.method === 'GET' && pathname === '/api/view') return json(response, 200, store.view(actor));
       if (actor.passwordChangeRequired) throw new RequestError(403, '请先设置新的个人密码');
+      if (request.method === 'GET' && pathname === '/api/progress-test/options') return json(response,200,store.adminProgressTest.options(actor));
+      if (request.method === 'GET' && pathname === '/api/progress-test') return json(response,200,store.adminProgressTest.search(actor,Object.fromEntries(url.searchParams)));
+      if (request.method === 'GET' && pathname === '/api/progress-test/detail') return json(response,200,store.adminProgressTest.detail(actor,Object.fromEntries(url.searchParams)));
+      if (request.method === 'GET' && pathname === '/api/records') {
+        return json(response, 200, store.userRecords(actor, Object.fromEntries(url.searchParams)));
+      }
       if (request.method === 'GET' && pathname === '/api/sales/board') {
         return json(response, 200, store.salesBoard(actor, Object.fromEntries(url.searchParams)));
       }
@@ -302,11 +334,12 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   const database = process.env.DEMO_DB || fileURLToPath(new URL('./.runtime/demo.sqlite', import.meta.url));
   if (database !== ':memory:') mkdirSync(dirname(database), { recursive: true });
   const port = Number(process.env.DEMO_PORT || 7101);
+  const host = process.env.DEMO_HOST || '127.0.0.1';
   const testMode = process.env.LOCAL_TEST_ACCOUNTS === '1';
   const configuredAdmin = process.env.APP_ADMIN_ACCOUNT || process.env.APP_ADMIN_PASSWORD;
   const admin = configuredAdmin
     ? { username: process.env.APP_ADMIN_ACCOUNT, password: process.env.APP_ADMIN_PASSWORD, name: process.env.APP_ADMIN_NAME || '运营后台' }
     : testMode ? { username: 'local-admin', password: 'LocalAdmin!012', name: '本地验收管理员' } : undefined;
   const server = createAppServer({ database, cutoff: process.env.DEMO_CASE_CUTOFF, seed: testMode, admin });
-  server.listen(port, '127.0.0.1', () => console.log(`股民索赔宝 · 本地服务 http://127.0.0.1:${server.address().port}`));
+  server.listen(port, host, () => console.log(`股民索赔宝 · 本地服务 http://${host}:${server.address().port}`));
 }

@@ -1,36 +1,29 @@
+import { developAccountInfo, nativePages } from '../test-support/native-page.mjs';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmdirSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, rmdirSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
-import vm from 'node:vm';
 import { createAppServer } from '../server.mjs';
 import { activateApiAccount } from '../test-support/business-account.mjs';
 
 // Use the shipped page and request wrapper. The wx adapter forwards HTTP to the isolated server.
 function miniRegistry(origin, token) {
-  let page;
   const app = { globalData: { token } };
-  const clientModule = { exports: {} };
   const wx = {
+    getAccountInfoSync: developAccountInfo,
     async request({ url, method, header, success, fail }) {
       try {
         const endpoint = new URL(url);
-        assert.equal(endpoint.origin, 'http://127.0.0.1:7101');
-        assert.equal(endpoint.pathname, '/api/registry');
-        const result = await fetch(origin + endpoint.pathname + endpoint.search, { method, headers: header });
+        assert.equal(endpoint.origin, origin);
+        assert.ok(['/api/view', '/api/records'].includes(endpoint.pathname));
+        const result = await fetch(endpoint, { method, headers: header });
         success({ statusCode: result.status, data: await result.json() });
       } catch (error) { fail(error); }
     },
   };
-  const getApp = () => app;
-  vm.runInNewContext(readFileSync(new URL('../miniprogram/client.js', import.meta.url), 'utf8'), { wx, getApp, module: clientModule });
-  vm.runInNewContext(readFileSync(new URL('../miniprogram/pages/registry/index.js', import.meta.url), 'utf8'), {
-    getApp, require: () => clientModule.exports, Page: definition => { page = definition; },
-  });
-  page.setData = patch => Object.assign(page.data, patch);
-  return page;
+  return nativePages({ app, wx, networkConfig: { apiBase: origin + '/api' } }).page('registry');
 }
 
 test('管理员通过网页接口核实并关联登记人后，小程序销售和股民只读各自记录，解除关联后刷新即清空', async t => {
@@ -76,10 +69,10 @@ test('管理员通过网页接口核实并关联登记人后，小程序销售�
   async function check(page, stocks) {
     await page.onShow();
     assert.equal(page.data.notice, '');
-    assert.deepEqual(Array.from(page.data.items, item => item.stockName), stocks);
-    assert.equal(page.data.total,stocks.length);
-    for (const item of page.data.items) {
-      assert.ok(item.rowKey);
+    assert.deepEqual(Array.from(page.data.recordList.data.items, item => item.stockName), stocks);
+    assert.equal(page.data.recordList.data.total,stocks.length);
+    for (const item of page.data.recordList.data.items) {
+      assert.ok(item.id);
       assert.ok(!('entryKey' in item || 'salesLink' in item || 'sourceRow' in item || 'sourceName' in item));
     }
   }
@@ -96,9 +89,9 @@ test('管理员通过网页接口核实并关联登记人后，小程序销售�
   await setLink('investor','19900005555',true);
   await check(salesPage,['共同股票','销售独有股票']);
   await check(investorPage,['共同股票','股民独有股票']);
-  investorPage.input({ detail:{value:'销售独有股票'} }); await investorPage.search();
-  assert.equal(investorPage.data.total,0);
-  await investorPage.reset(); investorPage.onHide(); assert.equal(investorPage.data.items.length,0);
+  investorPage.recordsInput({ detail:{value:'销售独有股票'} }); await investorPage.recordsSearch();
+  assert.equal(investorPage.data.recordList.data.total,0);
+  await investorPage.recordsReset(); investorPage.onHide(); assert.equal(investorPage.data.recordList.data,null);
   await setLink('investor','19900005555',false);
   await check(investorPage,[]);
   await check(salesPage,['共同股票','销售独有股票']);

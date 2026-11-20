@@ -1,0 +1,88 @@
+/* 三端首页的粉纸案卷服务卡 */
+.home-card {
+  position: relative;
+  box-sizing: border-box;
+  min-height: 177px;
+  margin-bottom: 20rpx;
+  padding: 17px 19px 18px;
+  overflow: hidden;
+  border: 1px solid #dfc4c5;
+  border-radius: 15px;
+  background: radial-gradient(ellipse at 84% 83%, rgba(231,200,198,.68) 0, transparent 40%), linear-gradient(111deg,#fff6f1 0%,#f8e9e5 58%,#efd9d8 100%);
+  box-shadow: 0 3px 8px rgba(96,50,56,.04), inset 0 1px 0 rgba(255,255,255,.73);
+}
+.home-card::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .45; background: repeating-linear-gradient(103deg,transparent 0 3px,rgba(113,78,69,.027) 3px 4px,transparent 4px 8px); }
+.home-card-top, .home-card-copy { position: relative; z-index: 1; }
+.home-card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.home-card-greeting { min-width: 0; color: #874e51; font-size: 12px; font-weight: 500; letter-spacing: .04em; line-height: 1.45; overflow-wrap: anywhere; }
+.home-card-date { flex: none; color: #775b5c; font-size: 11px; line-height: 1.45; letter-spacing: .035em; }
+.home-card-copy { width: 65%; max-width: calc(100% - 114px); }
+.home-card-title { margin-top: 14px; color: #54252e; font: 700 23px/1.21 "Songti SC", "STSong", "Noto Serif CJK SC", "SimSun", serif; font-size: clamp(22px,6.15vw,35px); letter-spacing: .015em; overflow-wrap: anywhere; }
+.home-card-note { margin: 7px 0 13px; color: #6e5555; font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+.home-card-action { display: inline-flex; width: auto; min-height: 32px; box-sizing: border-box; align-items: center; justify-content: center; gap: 8px; margin: 0; padding: 6px 11px 6px 13px; border-radius: 6px; border: 1px solid #702e39; background: #783540; color: #fff7ef; font: 600 13px/1.45 "PingFang SC", "Microsoft YaHei", sans-serif; box-shadow: inset 0 1px rgba(255,255,255,.16),0 2px 4px rgba(103,52,55,.09); }
+.home-card-action::after { border: 0; }
+.home-card-arrow { position: relative; width: 11px; height: 1px; background: currentColor; opacity: .87; }
+.home-card-arrow::after { content: ""; position: absolute; top: -2px; right: 0; width: 4px; height: 4px; border-top: 1px solid currentColor; border-right: 1px solid currentColor; transform: rotate(45deg); }
+.home-card-art { position: absolute; right: 8px; bottom: 14px; width: 120px; height: 100px; pointer-events: none; }
+@media (max-width: 350px) {
+  .home-card { padding: 16px; }
+  .home-card-copy { width: 64%; max-width: calc(100% - 96px); }
+  .home-card-art { width: 98px; height: 81px; bottom: 17px; }
+  .home-card-date { font-size: 10px; }
+}
+@media (min-width: 420px) {
+  .home-card { padding: 20px 23px; }
+  .home-card-copy { max-width: calc(100% - 142px); }
+  .home-card-art { width: 149px; height: 124px; right: 9px; bottom: 12px; }
+}
+@media (min-width: 575px) {
+  .home-card { padding: 22px 28px 23px; }
+  .home-card-copy { width: calc(100% - 194px); }
+  .home-card-title { margin-top: 16px; }
+  .home-card-note { margin: 8px 0 14px; }
+  .home-card-action { min-height: 35px; }
+  .home-card-art { width: 169px; height: 141px; right: 28px; }
+}
+.home-meta, .home-explainer { color: #75665f; font-size: 24rpx; line-height: 1.5; }
+.home-stock { overflow-wrap: anywhere; }
+.home-heading { color: #382923; font-family: "Songti SC", "STSong", "SimSun", serif; font-weight: 700; }
+.home-record-copy { min-width: 0; }
+.home-consult::after, .home-record::after { border: 0; }
+.home-stats, .home-recent, .home-empty {
+  background: #fffcf8;
+  border: 1rpx solid #e2d6ca;
+  border-radius: 25rpx;
+}
+.home-stats { display: flex; align-items: center; padding: 18rpx 6rpx; }
+.home-stat { flex: 1; min-width: 0; text-align: center; color: #6c5b53; font-size: 23rpx; }
+.home-stat + .home-stat { border-left: 1rpx solid #e2d6ca; }
+.home-figure { color: var(--wine); font: 700 43rpx/1.15 Georgia, serif; }
+.home-figure text { color: #725a52; font: 400 21rpx sans-serif; padding-left: 5rpx; }
+.home-explainer { padding: 8rpx 5rpx 0; }
+.home-section-head { display: flex; align-items: center; justify-content: space-between; gap: 20rpx; margin-top: 13rpx; }
+.home-heading { font-size: 34rpx; }
+.home-more { color: var(--wine); display: flex; align-items: center; min-height: 88rpx; padding-left: 16rpx; font-size: 25rpx; font-weight: 650; }
+.home-recent { padding: 0 19rpx; }
+.home-record {
+  display: flex; align-items: center; gap: 12rpx; width: 100%;
+  min-height: 108rpx; padding: 17rpx 0; box-sizing: border-box;
+  border: 0; border-radius: 0; text-align: left; line-height: 1.45; background: transparent;
+}
+.home-record + .home-record { border-top: 1rpx solid #ece2d8; }
+.home-record-icon { flex: none; width: 51rpx; height: 57rpx; border-radius: 14rpx; display: flex; align-items: center; justify-content: center; background: #f1e0db; color: #914d58; }
+.home-icon-lead { background: #f2eadd; color: #886b45; }
+.home-icon-paper { position: relative; width: 18rpx; height: 23rpx; border: 2rpx solid currentColor; border-radius: 3rpx; }
+.home-icon-paper::before { content: ""; position: absolute; width: 10rpx; height: 2rpx; top: 7rpx; left: 4rpx; background: currentColor; box-shadow: 0 5rpx currentColor; }
+.home-record-copy { flex: 1; }
+.home-stock { color: #352925; font-size: 29rpx; font-weight: 650; }
+.home-meta { margin-top: 2rpx; font-size: 22rpx; overflow-wrap: anywhere; }
+.home-state { flex-shrink: 0; max-width: 31%; border-radius: 7rpx; padding: 4rpx 9rpx; background: #eee7dc; color: #635549; font-size: 22rpx; overflow-wrap: anywhere; }
+.home-state-attention { color: #7a4323; background: #f4e4cb; }
+.home-chevron { color: #997f72; font-size: 26rpx; }
+.home-empty { padding: 24rpx; color: #6c5b53; font-size: 26rpx; }
+.home-consult {
+  display: flex; align-items: center; justify-content: space-between; width: 100%;
+  min-height: 88rpx; margin: 18rpx 0 0; padding: 12rpx 20rpx; border: 1rpx solid #e2d6ca;
+  border-radius: 17rpx; background: #fffcf8; color: var(--wine); font-size: 26rpx; text-align: left; line-height: 1.5;
+}
+.home-consult-form { margin-top: 12rpx; }

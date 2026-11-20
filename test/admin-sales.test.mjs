@@ -67,7 +67,10 @@ test('后台销售合并经办留资和已关联台账，重复同步不叠加�
   assert.equal(a.registryRecordCount, 4); assert.equal(a.systemRecordCount, 2);
   assert.equal(a.channelCount, 2); assert.equal(a.channelCustomers, 3);
   assert.equal(a.sourceUnknownCount, 1); assert.equal(a.unverifiedCustomerCount, 2);
-  assert.equal(a.pending, 1); assert.equal(a.followed, 1); assert.equal(a.followUnknown, 4);
+  assert.equal(a.unassignedCount, 0);
+  assert.doesNotMatch(JSON.stringify(first),/followUnknown|followed|"pending":|跟进/);
+  assert.ok(details({metric:'records'}).items.every(row=>!('followStatus' in row) && row.assignmentStatus));
+  assert.equal(db.prepare('SELECT count(*) AS n FROM lead_followups').get().n,2);
   assert.equal(b.registryRecordCount, 1); assert.equal(b.status, '已注销', '后台保留注销销售历史关系');
   assert.deepEqual(first.meta, { registryTotal: 6, registryLinked: 5, registryUnlinked: 1,
     registrySourceTotal: 6, futureRegistryCount: 0, sourceName: 'synthetic.xlsx', importedAt: '2026-11-19T00:00:00Z', today: '2026-11-19' });
@@ -194,4 +197,73 @@ test('后台销售汇总HTTP接口校验角色和独立后台会话，旧销售�
     assert.equal((await fetch(base + '/api/view', { headers })).status, 200);
   }
   assert.equal((await fetch(base + '/api/sales/board', { headers: { Authorization: 'Bearer ' + tokens[0] } })).status, 200);
+});
+
+test('股票测试快照切换及恢复贯穿后台、销售和股民当前进度，不生成案件或泄露临时字段', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'admin-progress-readers-')), path = join(dir, 'fixture.sqlite');
+  const store = createStore(path, { seed: true, cutoff: '2000-01-01', progressTestEnabled:true });
+  const db = new DatabaseSync(path);
+  t.after(() => { store.close(); db.close(); unlinkSync(path); rmdirSync(dir); });
+  const sales = { role: 'sales', id: 'sales-b' }, investor = { role: 'investor', id: 'customer-b' };
+  db.prepare("UPDATE lead_assignments SET salesId='sales-b' WHERE leadId='lead-demo-b'").run();
+  const cases = () => store.adminSales.recordsReport(admin, { type: 'cases' }).total;
+  const initialCases = cases(), databaseCases = db.prepare('SELECT count(*) AS n FROM cases').get().n;
+  const report = input => store.adminSales.recordsReport(admin, { type: 'records', q: '示例股票乙', ...input });
+  function verify(expected, group) {
+    const row = report().items[0];
+    assert.equal(row.caseStatus, expected);
+    assert.equal(report({ status: group }).total, 1, '股票筛选应按股票当前进度');
+    assert.equal(store.adminSales.details(admin, { salesId: sales.id, metric: 'records' }).items[0].caseStatus, expected);
+    for (const actor of [sales, investor]) {
+      assert.equal(store.userRecords(actor, { q: '示例股票乙' }).items[0].status, expected);
+      assert.equal(store.progress(actor, { kind: 'lead', id: 'lead-demo-b' }).current.label, expected);
+    }
+    assert.equal(cases(), initialCases, '股票节点不改变真实案件统计');
+    assert.equal(db.prepare('SELECT count(*) AS n FROM cases').get().n, databaseCases);
+    assert.ok(!['testing','hasSnapshot','progressStage','progressNode','completedNodes','nextState','sourceStatus'].some(field => field in row));
+  }
+  verify('已留资', 'other');
+  const selected = {kind:'lead',id:'lead-demo-b'};
+  let detail = store.adminProgressTest.detail(admin,selected);
+  for (const [stage,node,expected,group] of [
+    ['intake','signed_waiting_filing','已签约','other'],
+    ['filing','preparing','立案材料准备中','other'],
+    ['first_hearing','awaiting_hearing','一审待开庭','ongoing'],
+    ['closure','closed','已结案','closed'],
+  ]) {
+    detail = store.adminProgressTest.save(admin,{...selected,revision:detail.revision,stage,node});
+    assert.equal(detail.testing,true);
+    verify(expected, group);
+  }
+  detail = store.adminProgressTest.restore(admin,{...selected,revision:detail.revision});
+  assert.equal(detail.testing,false);
+  verify('已留资', 'other');
+});
+
+test('后台股票采用与详情相同的同日案件排序，自有测试快照优先且关闭测试后恢复证据保护', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'admin-case-readers-')), path = join(dir, 'fixture.sqlite');
+  const store = createStore(path, { seed: true, cutoff: '2000-01-01', progressTestEnabled:true });
+  const db = new DatabaseSync(path);
+  t.after(() => { store.close(); db.close(); unlinkSync(path); rmdirSync(dir); });
+  const actor = { role: 'sales', id: 'sales-a' };
+  db.prepare("UPDATE lead_assignments SET salesId='sales-a' WHERE leadId='lead-demo-a'").run();
+  const report = input => store.adminSales.recordsReport(admin, { type:'records', q:'示例股票甲', ...input });
+  store.syncProgress([
+    {kind:'case',id:'case-demo-1',revision:1,stage:'first_hearing',node:'awaiting_hearing'},
+    {kind:'case',id:'case-demo-2',revision:1,stage:'closure',node:'closed'},
+  ]);
+  assert.equal(report().items[0].caseStatus, '一审待开庭');
+  assert.equal(report().items[0].caseStatus, store.progress(actor, {kind:'lead',id:'lead-demo-a'}).current.label);
+  assert.equal(report({status:'closed'}).total, 0, '旧子案结案不把当前一审的股票放入结案筛选');
+  assert.equal(store.adminSales.recordsReport(admin, {type:'cases',q:'示例股票甲',status:'closed'}).total, 1);
+  store.syncProgress([{kind:'lead',id:'lead-demo-a',revision:1,stage:'intake',node:'signed_waiting_filing'}]);
+  const selected = {kind:'lead',id:'lead-demo-a'};
+  const before = store.adminProgressTest.detail(admin,selected);
+  const testing = store.adminProgressTest.save(admin,{...selected,revision:before.revision,stage:'intake',node:'signed_waiting_filing'});
+  assert.equal(report().items[0].caseStatus, '已签约');
+  assert.equal(store.progress(actor, {kind:'lead',id:'lead-demo-a'}).current.node, 'signed_waiting_filing');
+  store.adminProgressTest.restore(admin,{...selected,revision:testing.revision});
+  assert.equal(store.progress(actor, {kind:'lead',id:'lead-demo-a'}).current.node, 'signed');
+  assert.equal(report().items[0].caseStatus, store.userRecords(actor, {q:'示例股票甲'}).items[0].status);
+  assert.equal(db.prepare("SELECT testing,revision FROM company_record_progress WHERE kind='lead' AND record_id='lead-demo-a'").get().testing,0);
 });

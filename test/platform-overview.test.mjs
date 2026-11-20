@@ -58,7 +58,7 @@ function fixture(t) {
   return { db, entry, model, board: input => model.platformBoard(admin, input) };
 }
 
-test('总览复用全部历史与系统数据，八卡和明细一致，未知跟进不等于待分配', t => {
+test('总览复用全部历史与系统数据，八卡和明细一致，派单状态独立于旧跟进内容', t => {
   const { db, entry, board } = fixture(t);
   entry('r1', { status: '已立案未开庭' });
   entry('r2', { sales: '*销售甲', stock: '第二股票', status: '已结案' });
@@ -68,6 +68,8 @@ test('总览复用全部历史与系统数据，八卡和明细一致，未知�
   assert.deepEqual(counts(result), { records: 7, customers: 4, channels: 4, pending: 4, ongoing: 2, closed: 3, registry: 4, signed: 1 });
   for (const metric of result.metrics) assert.equal(board({ metric: metric.key }).total, metric.value, metric.key);
   assert.deepEqual(result.queues.map(row => row.value), [1, 1, 2]);
+  assert.ok(board({metric:'pending'}).items.every(row=>row.assignmentStatus.startsWith('待')));
+  assert.doesNotMatch(JSON.stringify(result),/followStatus|followups|跟进/);
   for (const queue of result.queues) assert.equal(board({ metric: 'pending', queue: queue.key }).total, queue.value);
   assert.equal(board({ metric: 'pending', queue: 'registry_unlinked' }).items.length, 2);
   assert.equal(result.meta.registryTotal, 4); assert.equal(result.meta.registryUnlinked, 1);
@@ -132,7 +134,42 @@ test('全部、本月及自选日期按上海登记日期含边界筛选，未�
   assert.ok(month.recent.every(row => row.registeredOn >= month.from && row.registeredOn <= month.to));
 });
 
-test('签约只依据真实签约或明确同步节点，不从结案、立案或合同文字推定，日期范围展示当前状态', t => {
+test('无效ISO登记日期保留在全部数据，不能自动进位到其他月份', t => {
+  const { db, entry, board, model } = fixture(t);
+  db.exec("UPDATE leads SET createdAt='2026-02-30T00:00:00Z' WHERE id='la'");
+  entry('invalid-iso', { name: '无效日期客户', phone: '19900008880', date: '2026-02-30T00:00:00Z', status: '已立案未开庭' });
+  const all = board({ metric: 'records' });
+  assert.equal(all.items.find(row => row.stockName === '股票甲').registeredOn, '');
+  assert.equal(all.items.find(row => row.title === '无效日期客户').registeredOn, '');
+  const range = { period: 'custom', from: '2026-03-02', to: '2026-03-02' };
+  assert.equal(board({ ...range, metric: 'records' }).total, 0);
+  assert.equal(model.recordsReport(admin, { ...range, type: 'signed' }).total, 0);
+  assert.ok(board({ metric: 'signed' }).items.some(row => row.title === '无效日期客户'));
+});
+
+test('客户和签约明细、报表共用当前范围的案件进度且不改变签约统计', t => {
+  const { entry, board, model } = fixture(t);
+  entry('filed-card', { name: '进度客户', phone: '19900008888', status: '已立案未开庭', date: '2026-11-10' });
+  const baseline = counts(board());
+  for (const metric of ['customers', 'signed']) {
+    assert.equal(board({ metric }).items.find(row => row.title === '进度客户').caseStatus, '已立案未开庭');
+  }
+  entry('judgment-card', { name: '进度客户', phone: '19900008888', stage: 'first_hearing', node: 'judgment_pending_effective', date: '2025-01-01' });
+  assert.equal(counts(board()).signed, baseline.signed, '同一客户新增股票不重复计签约人数');
+  for (const metric of ['customers', 'signed']) {
+    assert.equal(board({ metric }).items.find(row => row.title === '进度客户').caseStatus, '多个案件进度');
+    assert.equal(board({ metric, period: 'month' }).items.find(row => row.title === '进度客户').caseStatus, '已立案未开庭');
+    const report = model.recordsReport(admin, { type: metric });
+    assert.ok(report.columns.some(column => column.key === 'caseStatus' && column.label === '案件进度'));
+    assert.equal(report.items.find(row => row.title === '进度客户').caseStatus, '多个案件进度');
+    if (metric === 'signed') assert.ok(!report.columns.some(column => column.label === '签约状态'));
+  }
+  entry('same-progress', { name: '同进度客户', phone: '19900008889', status: '已立案未开庭' });
+  entry('same-progress-2', { name: '同进度客户', phone: '19900008889', status: '已立案未开庭', code: '000020' });
+  assert.equal(board({ metric: 'signed' }).items.find(row => row.title === '同进度客户').caseStatus, '已立案未开庭');
+});
+
+test('历史立案或结案与明确签约计入当前统计，合同文字和已清空的节点不计入', t => {
   const { db, entry, board } = fixture(t);
   const unique = (id, options = {}) => entry(id, { name: id, phone: '', ...options });
   unique('closed-only', { status: '已结案' }); unique('filed-only', { status: '已立案未开庭' });
@@ -149,7 +186,7 @@ test('签约只依据真实签约或明确同步节点，不从结案、立案�
     ('registry','invalid-completed','intake','lead_received','secret','broken-json');
     INSERT INTO signings VALUES ('bob','2026-11-20');`);
   let signed = board({ metric: 'signed' });
-  assert.equal(signed.total, 4); assert.ok(signed.items.every(row => row.status === '已签约'));
+  assert.equal(signed.total, 6); assert.ok(signed.items.every(row => row.status === '已签约'));
   assert.equal(signed.items.find(row => row.title === '甲客户').signedOn, '2020-01-01');
   assert.equal(signed.items.find(row => row.title === 'signed-import').signedOn, '', '无证据的真实签约日不编造');
   assert.equal(board({ metric: 'signed', period: 'custom', from: '2025-05-10', to: '2025-05-10' }).total, 1,
@@ -157,9 +194,10 @@ test('签约只依据真实签约或明确同步节点，不从结案、立案�
   assert.equal(board({ metric: 'signed', period: 'month' }).total, 1);
   db.exec("INSERT INTO company_record_progress VALUES ('case','kc','intake','signed','secret','[]')");
   signed = board({ metric: 'signed' });
-  assert.equal(signed.total, 5, '系统案件明确同步签约可回连客户');
+  assert.equal(signed.total, 7, '系统案件明确同步签约可回连客户');
   assert.ok(!JSON.stringify(signed).includes('secret'));
-  assert.ok(!signed.items.some(row => row.title === 'closed-only' || row.title === 'filed-only' || row.title === 'cleared'));
+  for (const title of ['closed-only','filed-only']) assert.equal(signed.items.find(row=>row.title===title).signedOn,'');
+  assert.ok(!signed.items.some(row => ['cleared','contract-only','invalid-completed'].includes(row.title)));
 });
 
 test('分页搜索遵循选定期间且不改变卡片数量，返回可读编号及有限公共字段', t => {
@@ -234,7 +272,7 @@ test('渠道、客户案件、报表共享总览全源集合，状态筛选和�
   assert.ok(sales.definition.includes('不能直接相加'));
   db.exec("INSERT INTO leads VALUES ('no-case','alice','尚未建案股票','000999','2026-11-10')");
   const noCase = report({ type: 'records', origin: 'system', status: 'other' });
-  assert.equal(noCase.total, 1); assert.equal(noCase.items[0].caseStatus, '尚未建案');
+  assert.equal(noCase.total, 1); assert.equal(noCase.items[0].caseStatus, '已留资');
   assert.equal(model.recordsReport(admin, { type: 'records', origin: 'system', status: 'other' }, true).total, 1);
   assert.equal(report({ type: 'cases', origin: 'system', status: 'other' }).total, 0, '未建案记录可检索但不伪造案件');
 });

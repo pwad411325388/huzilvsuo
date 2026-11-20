@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { reportRows } from '../web/report.js';
+import { reportRows, reportDefinition } from '../web/report.js';
 
 test('兼容报表保留注销业务并按状态和业务量排序，明细及实际签约按日期稳定排序', () => {
   const view = {
@@ -18,6 +18,10 @@ test('兼容报表保留注销业务并按状态和业务量排序，明细及�
       { id:'k1',recordNumber:1,leadId:'l1',openedOn:'2026-11-18',status:'已受理' }],
   };
   const original = JSON.stringify(view);
+  assert.ok(reportRows(view,{type:'leads'}).every(row => row.status === '已分配'), '兼容旧快照时根据归属展示派单状态');
+  assert.equal(reportDefinition('leads').columns.find(column => column.key === 'status').label, '分配状态');
+  assert.doesNotMatch(JSON.stringify(reportDefinition('sales').columns), /跟进|followed|pending/);
+  assert.ok(reportRows(view,{type:'sales'}).every(row => !('followed' in row) && !('pending' in row)));
   assert.deepEqual(reportRows(view,{type:'sales'}).map(row=>row.id),['active','pending','closed']);
   assert.equal(reportRows(view,{type:'channels'}).at(-1).id,'closed-b');
   assert.deepEqual(reportRows(view,{type:'leads'}).map(row=>row.number),['LZ-000001','LZ-000002','LZ-000003']);
@@ -29,4 +33,13 @@ test('兼容报表保留注销业务并按状态和业务量排序，明细及�
     assert.deepEqual(reportRows(reversed,{type}),reportRows(view,{type}), '相同数据不能随输入顺序换页');
   }
   assert.equal(JSON.stringify(view),original,'排序不更改业务快照');
+
+  const progressView = { ...view, cases: [
+    { id:'current', leadId:'l2', brokerId:'active-b', status:'一审待开庭', caseGroup:'ongoing' },
+    { id:'legacy', leadId:'l2', brokerId:'active-b', status:'已受理' },
+    { id:'unconfirmed', leadId:'l2', brokerId:'active-b', status:'诉讼中', caseGroup:'unknown' },
+  ] };
+  assert.equal(reportRows(progressView,{type:'sales'}).find(row => row.id === 'active').ongoing, 2,
+    '在办案件按正式分类统计，缺少分类的旧记录才使用状态回退');
+  assert.equal(reportRows(progressView,{type:'channels'}).find(row => row.id === 'active-b').ongoing, 2);
 });

@@ -1,52 +1,190 @@
+<wxs module="homeCopy">
+function dateLabel(day) {
+  if (!day || day.length !== 10) return '';
+  var parts = day.split('-');
+  if (parts.length !== 3) return '';
+  var month = parseInt(parts[1], 10), date = parseInt(parts[2], 10);
+  return month >= 1 && month <= 12 && date >= 1 && date <= 31 ? month + '月' + date + '日' : '';
+}
+function summary(view, records, board, boardError) {
+  if (view.actor.role === 'investor') {
+    var home = view.investorHome;
+    if (!home) return '首页摘要暂未提供';
+    var item = home.attention;
+    if (!item) return home.totalRecords ? '暂无补料提醒' : '暂无维权记录，登记后可在这里查看进度。';
+    var notes = [item.stockName || '股票名称待核对'];
+    if (item.stockCode) notes.push(item.stockCode);
+    if (item.caseTitle && item.caseTitle !== item.stockName) notes.push(item.caseTitle);
+    notes.push(item.status || '待补充材料');
+    if (home.attentionCount > 1) notes.push('共 ' + home.attentionCount + ' 条待关注');
+    return notes.join(' · ');
+  }
+  if (view.actor.role === 'sales') {
+    if (!records || !records.data) return records && records.error ? '客户与股票记录暂未加载' : '正在读取客户与股票记录…';
+    var scoped = records.q || records.period !== 'all';
+    return (scoped ? '当前筛选共 ' : '') + records.data.total + ' 条客户与股票记录';
+  }
+  if (!board) return boardError ? '在办案件数暂未加载' : '正在读取在办案件数…';
+  for (var i = 0; i < board.metrics.length; i++) {
+    var metric = board.metrics[i];
+    if (metric.key === 'ongoing' && typeof metric.value === 'number' && metric.value >= 0) {
+      var period = board.period === 'month' ? '本月登记的记录中，' : board.period === 'custom' ? '所选登记期间内，' : '';
+      return period + metric.value + ' 件案件在办';
+    }
+  }
+  return '在办案件数暂未提供';
+}
+module.exports = { dateLabel: dateLabel, summary: summary };
+</wxs>
+
+<template name="home-card">
+  <view class="home-card">
+    <view class="home-card-top">
+      <text class="home-card-greeting">{{view.actor.role === 'broker' ? (view.broker.name || view.actor.name || '您好') : (view.actor.name ? view.actor.name + '，您好' : '您好')}}</text>
+      <text wx:if="{{view.today}}" class="home-card-date">{{homeCopy.dateLabel(view.today)}}</text>
+    </view>
+    <view class="home-card-copy">
+      <view class="home-card-title" aria-role="heading">{{view.actor.role === 'investor' ? '我的维权服务' : view.actor.role === 'sales' ? '销售工作台' : '渠道台账'}}</view>
+      <view class="home-card-note">{{homeCopy.summary(view, recordList, salesBoard, boardError)}}</view>
+      <block wx:if="{{view.actor.role === 'investor'}}">
+        <button wx:if="{{view.investorHome.attention}}" class="home-card-action" bindtap="openProgress" data-kind="{{view.investorHome.attention.kind}}" data-id="{{view.investorHome.attention.progressId}}">查看案件进度<text class="home-card-arrow" aria-hidden="true"></text></button>
+        <navigator wx:else class="home-card-action" url="/pages/registry/index?presentation=home">查看我的记录<text class="home-card-arrow" aria-hidden="true"></text></navigator>
+      </block>
+      <button wx:else class="home-card-action" bindtap="openHomeAction">{{view.actor.role === 'sales' ? '登记券商合作' : '查看客户明细'}}<text class="home-card-arrow" aria-hidden="true"></text></button>
+    </view>
+    <image class="home-card-art" mode="aspectFit" src="/assets/home-{{view.actor.role}}.png" aria-hidden="true" />
+  </view>
+</template>
+
+<template name="user-records">
+  <view class="panel user-records">
+    <view class="business-section-head"><view class="heading">{{view.actor.role === 'investor' ? (recordList.presentation === 'home' ? '全部记录' : '我的股票登记') : '我的客户与股票'}}</view>
+      <text wx:if="{{recordList.data && !recordList.loading}}" class="business-total">{{recordList.data.total}} {{view.actor.role === 'investor' && recordList.presentation !== 'home' ? '条登记' : '条'}}</text>
+      <button class="business-reset" bindtap="toggleRecordResults" aria-expanded="{{recordList.expanded}}">{{recordList.expanded ? '收起' : '展开'}}{{view.actor.role === 'investor' ? '记录列表' : '客户列表'}}</button>
+    </view>
+    <view wx:if="{{recordList.customerId}}" class="notice">{{recordList.signingCustomer && recordList.period === 'all' && !recordList.q && recordList.ledger === 'all' ? '查看该签约客户的全部股票记录' : '正在查看所选客户的股票记录'}}<button class="secondary" bindtap="recordsAllCustomers">查看全部客户</button></view>
+    <view wx:if="{{view.actor.role !== 'investor'}}" class="business-search">
+      <input value="{{recordList.draft}}" bindinput="recordsInput" bindconfirm="recordsSearch" confirm-type="search" maxlength="100" aria-label="搜索客户或股票" placeholder="{{view.actor.role === 'sales' ? '姓名、电话、股票名称或代码' : '客户姓名、股票名称或代码'}}" />
+      <button class="secondary" bindtap="recordsSearch">搜索</button>
+      <button wx:if="{{recordList.draft || recordList.q}}" class="business-reset" bindtap="recordsReset">重置</button>
+    </view>
+    <view class="chips board-periods business-period">
+      <button class="chip {{recordList.period === 'all' ? 'selected' : ''}}" bindtap="recordsPickPeriod" data-period="all">全部</button>
+      <button class="chip {{recordList.period === 'month' ? 'selected' : ''}}" bindtap="recordsPickPeriod" data-period="month">本月</button>
+      <button class="chip {{recordList.period === 'custom' ? 'selected' : ''}}" bindtap="toggleDateFields" aria-expanded="{{recordList.datesOpen}}">{{recordList.datesOpen ? '收起日期' : '自选日期'}}</button>
+    </view>
+    <block wx:if="{{recordList.datesOpen}}">
+    <view class="board-dates">
+      <view><view class="label">开始日期</view><picker mode="date" value="{{recordList.from}}" end="{{view.today}}" bindchange="recordsPickDate" data-field="from"><view class="input">{{recordList.from || '选择开始日期'}}</view></picker></view>
+      <view><view class="label">结束日期</view><picker mode="date" value="{{recordList.to}}" end="{{view.today}}" bindchange="recordsPickDate" data-field="to"><view class="input">{{recordList.to || '选择结束日期'}}</view></picker></view>
+    </view>
+    <button class="secondary {{recordList.period === 'custom' ? 'selected' : ''}}" bindtap="recordsApplyDates">按日期查看</button>
+    <view wx:if="{{recordList.dateError}}" class="field-error board-note">{{recordList.dateError}}</view>
+    </block>
+    <view wx:if="{{view.actor.role === 'broker'}}" class="chips">
+      <button class="chip {{recordList.ledger === 'all' ? 'selected' : ''}}" bindtap="recordsPickLedger" data-ledger="all">全部客户</button>
+      <button class="chip {{recordList.ledger === 'negotiating' ? 'selected' : ''}}" bindtap="recordsPickLedger" data-ledger="negotiating">洽谈中</button>
+      <button class="chip {{recordList.ledger === 'signed' ? 'selected' : ''}}" bindtap="recordsPickLedger" data-ledger="signed">已签约</button>
+    </view>
+    <view wx:if="{{recordList.loading}}" class="empty board-note">正在读取客户与股票记录…</view>
+    <view wx:elif="{{recordList.error}}" class="board-note"><view class="field-error">{{recordList.error}}</view><button class="secondary" bindtap="retryRecords">重新加载</button></view>
+    <block wx:elif="{{recordList.data}}">
+      <view wx:if="{{recordList.data.period !== 'all'}}" class="muted board-note">{{recordList.data.from}} 至 {{recordList.data.to}}</view>
+      <block wx:if="{{recordList.expanded}}">
+      <view class="record business-record" wx:for="{{recordList.data.items}}" wx:key="id">
+        <view class="line"><text class="strong">{{view.actor.role === 'investor' ? (item.stockName || item.stockCode || '股票名称待核对') : item.customer}}</text><text wx:if="{{item.status}}" class="tag">{{item.status}}</text></view>
+        <view wx:if="{{view.actor.role !== 'investor'}}">{{item.stockName || '股票待核对'}} · {{item.stockCode}}</view>
+        <view wx:elif="{{item.stockCode}}" class="muted">股票代码 {{item.stockCode}}</view>
+        <view wx:if="{{recordList.presentation === 'home' && item.caseTitle && item.caseTitle !== item.stockName}}" class="muted">案件 {{item.caseTitle}}</view>
+        <view wx:if="{{view.actor.role !== 'broker' && item.phone}}" class="muted">手机 {{item.phone}}</view>
+        <view class="muted">登记日期 {{item.registeredOn || '待核对'}}</view>
+        <view wx:if="{{view.actor.role === 'broker' && item.signingStatus}}" class="muted">客户签约状态 {{item.signingStatus}}</view>
+        <button wx:if="{{view.actor.role !== 'broker' && item.kind && item.progressId}}" class="progress-button" bindtap="openProgress" data-kind="{{item.kind}}" data-id="{{item.progressId}}">查看进度 ›</button>
+        <block wx:for="{{item.cases}}" wx:for-item="record" wx:key="id">
+          <button wx:if="{{view.actor.role !== 'broker'}}" class="progress-button" bindtap="openProgress" data-kind="case" data-id="{{record.id}}">案件 {{record.title}} · {{record.status}} ›</button>
+          <view wx:else class="muted">案件 {{record.title}} · {{record.status}}</view>
+        </block>
+      </view>
+      <view wx:if="{{!recordList.data.items.length}}" class="empty">{{recordList.q ? '没有找到匹配的客户或股票' : '当前范围内暂无记录'}}</view>
+      </block>
+      <view class="board-pager">
+        <button class="secondary" bindtap="recordsPrevious" disabled="{{recordList.data.offset === 0}}">上一页</button>
+        <text class="muted">{{recordList.page}} / {{recordList.pages}} 页</text>
+        <button class="secondary" bindtap="recordsNext" disabled="{{recordList.data.offset + recordList.data.limit >= recordList.data.total}}">下一页</button>
+      </view>
+      <view class="muted board-page-size">每页 {{recordList.data.limit}} 条</view>
+      <button wx:if="{{recordList.expanded && recordList.data.items.length}}" class="business-reset" bindtap="toggleRecordResults" aria-expanded="{{recordList.expanded}}">收起{{view.actor.role === 'investor' ? '记录列表' : '客户列表'}}</button>
+    </block>
+  </view>
+</template>
+
 <template name="period-board">
         <view class="panel sales-board">
-          <view class="heading">{{view.actor.role === 'broker' && !isHome ? '客户台账' : '我的数据'}}</view>
-          <view wx:if="{{view.actor.role === 'broker' && !isHome}}" class="chips">
-            <button class="chip {{ledger === '洽谈中' ? 'selected' : ''}}" bindtap="pickLedger" data-status="洽谈中">洽谈中</button>
-            <button class="chip {{ledger === '已签约' ? 'selected' : ''}}" bindtap="pickLedger" data-status="已签约">已签约</button>
-          </view>
-          <view class="chips board-periods">
+          <view class="heading">{{view.actor.role === 'broker' ? '渠道概览' : '我的数据'}}</view>
+          <view class="chips board-periods business-period">
             <button class="chip {{boardPeriod === 'all' ? 'selected' : ''}}" bindtap="pickBoardPeriod" data-period="all">全部</button>
             <button class="chip {{boardPeriod === 'month' ? 'selected' : ''}}" bindtap="pickBoardPeriod" data-period="month">本月</button>
+            <button class="chip {{boardPeriod === 'custom' ? 'selected' : ''}}" bindtap="toggleDateFields" aria-expanded="{{recordList.datesOpen}}">{{recordList.datesOpen ? '收起日期' : '自选日期'}}</button>
           </view>
+          <block wx:if="{{recordList.datesOpen}}">
           <view class="board-dates">
             <view><view class="label">开始日期</view><picker mode="date" value="{{boardFrom}}" end="{{view.today}}" bindchange="pickBoardDate" data-field="from"><view class="input">{{boardFrom || '选择开始日期'}}</view></picker></view>
             <view><view class="label">结束日期</view><picker mode="date" value="{{boardTo}}" end="{{view.today}}" bindchange="pickBoardDate" data-field="to"><view class="input">{{boardTo || '选择结束日期'}}</view></picker></view>
           </view>
           <button class="secondary {{boardPeriod === 'custom' ? 'selected' : ''}}" bindtap="applyBoardDates">按日期查看</button>
           <view wx:if="{{boardDateError}}" class="field-error board-note">{{boardDateError}}</view>
+          </block>
           <view wx:if="{{boardLoading}}" class="empty board-note">正在加载统计与明细…</view>
           <view wx:elif="{{boardError}}" class="board-note">
             <view class="field-error">{{boardError}}</view><button class="secondary" bindtap="retryBoard">重新加载</button>
           </view>
           <block wx:elif="{{salesBoard}}">
-            <view class="muted board-note">{{salesBoard.period === 'all' ? (view.actor.role === 'broker' ? '累计全部归属数据' : '累计全部数据（含历史同步）') : salesBoard.from + ' 至 ' + salesBoard.to}}</view>
+            <view wx:if="{{salesBoard.period !== 'all'}}" class="muted board-note">{{salesBoard.from}} 至 {{salesBoard.to}}</view>
             <view class="metrics" wx:if="{{view.actor.role !== 'broker' || isHome}}">
               <button class="metric board-card {{item.key === boardMetric ? 'selected' : ''}}" wx:for="{{salesBoard.metrics}}" wx:key="key" bindtap="pickBoardMetric" data-key="{{item.key}}">
                 <view class="muted">{{item.label}}</view><view class="count">{{item.value}} <text>{{item.unit}}</text></view>
               </button>
             </view>
-            <view class="muted board-note" wx:for="{{salesBoard.notes}}" wx:key="*this">{{item}}</view>
-            <view class="line subheading"><text>{{boardSelected.label}}</text><text class="muted">{{salesBoard.total}} {{boardSelected.unit}}</text></view>
-            <view class="muted board-note">排序：{{salesBoard.orderLabel || '按登记日期从新到旧，缺少日期的记录在最后。'}}</view>
-            <view wx:if="{{boardSelected.dateLabel}}" class="muted">按{{boardSelected.dateLabel}}筛选</view>
-            <view wx:if="{{salesBoard.period !== 'all' && boardSelected.unknownDateCount}}" class="muted board-note">另有 {{boardSelected.unknownDateCount}} {{boardSelected.unit}}未明确日期，可在全部数据中查看。</view>
-            <view class="record" wx:for="{{salesBoard.items}}" wx:key="id">
-              <view class="line"><text class="strong">{{item.title}}</text><text wx:if="{{item.status}}" class="tag">{{item.status}}</text></view>
+          </block>
+          <view wx:if="{{view.actor.role === 'broker' && isHome}}" class="broker-filters">
+            <view class="business-search">
+              <input value="{{boardDraft}}" bindinput="boardInput" bindconfirm="boardSearch" confirm-type="search" maxlength="100" aria-label="搜索客户或股票" placeholder="客户姓名、股票名称或代码" />
+              <button class="secondary" bindtap="boardSearch">搜索</button>
+              <button wx:if="{{boardDraft || boardQ}}" class="business-reset" bindtap="boardReset">重置</button>
+            </view>
+            <view wx:if="{{boardMetric === 'customers' || boardMetric === 'effective'}}" class="chips">
+              <button class="chip {{boardMetric === 'customers' && boardLedger === 'all' ? 'selected' : ''}}" data-ledger="all" bindtap="pickBoardLedger">全部客户</button>
+              <button class="chip {{boardLedger === 'negotiating' ? 'selected' : ''}}" data-ledger="negotiating" bindtap="pickBoardLedger">洽谈中</button>
+              <button class="chip {{boardMetric === 'effective' ? 'selected' : ''}}" data-ledger="signed" bindtap="pickBoardLedger">已签约</button>
+            </view>
+          </view>
+          <block wx:if="{{!boardLoading && !boardError && salesBoard}}">
+            <view id="home-board-details" class="business-section-head business-detail-head"><view class="heading">{{boardSelected.label}}明细</view>
+              <text wx:if="{{!boardQ}}" class="business-total">{{salesBoard.total}} {{boardSelected.unit}}</text>
+              <button class="business-reset" bindtap="toggleBoardDetails" aria-expanded="{{boardExpanded}}">{{boardExpanded ? '收起明细' : '展开明细'}}</button>
+            </view>
+            <view wx:if="{{view.actor.role === 'broker' && boardQ}}" class="muted board-note">匹配 {{salesBoard.total}} / {{salesBoard.scopeTotal}} {{boardSelected.unit}}</view>
+            <block wx:if="{{boardExpanded}}">
+            <view class="record business-record" wx:for="{{salesBoard.items}}" wx:key="id">
+              <view class="line"><text class="strong">{{item.title}}</text><text wx:if="{{item.status}}" class="tag" aria-label="{{(boardMetric === 'channels' ? '渠道状态，' : '案件进度，') + item.status}}">{{item.status}}</text></view>
               <view wx:if="{{item.subtitle}}" class="muted">{{item.subtitle}}</view>
-              <view wx:if="{{item.phone}}" class="muted">手机 {{item.phone}}</view>
+              <view wx:if="{{view.actor.role === 'sales' && item.phone}}" class="muted">手机 {{item.phone}}</view>
               <view class="muted">登记日期 {{item.registeredOn || '待核对'}}</view>
               <view wx:if="{{item.openedOn}}" class="muted">案件登记日期 {{item.openedOn}}</view>
               <view wx:if="{{item.signedOn}}" class="muted">签约日期 {{item.signedOn}}</view>
-              <button wx:if="{{item.kind && item.progressId}}" class="progress-button" bindtap="openProgress" data-kind="{{item.kind}}" data-id="{{item.progressId}}">查看进度 ›</button>
+              <button wx:if="{{view.actor.role === 'sales' && item.progressId && (item.kind === 'lead' || item.kind === 'registry' || item.kind === 'case') && (boardMetric === 'closed' || item.recordCount === 1)}}" class="progress-button" bindtap="openProgress" data-kind="{{item.kind}}" data-id="{{item.progressId}}">查看进度 ›</button>
+              <button wx:elif="{{view.actor.role === 'sales' && (boardMetric === 'customers' || boardMetric === 'effective') && (item.customerId || item.id)}}" class="progress-button" bindtap="openCustomerRecords" data-customer-id="{{item.customerId || item.id}}" data-board="true">{{item.recordCount > 1 ? '选择股票查看进度' : '查看股票记录'}} ›</button>
+              <button wx:elif="{{view.actor.role === 'broker' && item.customerId}}" class="progress-button" bindtap="openCustomerRecords" data-customer-id="{{item.customerId}}" data-board="true">{{boardMetric === 'signings' ? '查看该签约客户的全部股票记录' : '查看股票记录'}} ›</button>
             </view>
             <view wx:if="{{!salesBoard.total}}" class="empty">暂无符合条件的记录</view>
+            </block>
             <view class="board-pager">
               <button class="secondary" bindtap="boardPrevious" disabled="{{salesBoard.offset === 0}}">上一页</button>
               <text class="muted">{{boardPage}} / {{boardPages}} 页</text>
               <button class="secondary" bindtap="boardNext" disabled="{{salesBoard.offset + salesBoard.limit >= salesBoard.total}}">下一页</button>
             </view>
             <view class="muted board-page-size">每页 {{salesBoard.limit}} 条</view>
+            <button wx:if="{{boardExpanded && salesBoard.items.length}}" class="business-reset" bindtap="toggleBoardDetails" aria-expanded="{{boardExpanded}}">收起明细</button>
           </block>
         </view>
 </template>
@@ -64,7 +202,7 @@
 <template name="board">
   <view class="panel">
     <view class="heading">{{sales ? '券商合作统计' : '数据看板'}}</view>
-    <view class="muted" wx:if="{{sales}}">按券商合作负责人统计。经办留资请到首页查看。</view>
+    <view class="muted" wx:if="{{sales}}">经办留资请到首页查看。</view>
     <view class="metrics">
       <view class="metric" wx:for="{{metrics}}" wx:key="label">
         <view class="muted">{{item.label}}</view><view class="count">{{item.value}} <text>{{item.unit}}</text></view>
@@ -75,7 +213,7 @@
     </view>
     <view class="line subheading"><text>{{metrics[metric].label}}</text><text class="muted">{{metrics[metric].value}} {{metrics[metric].unit}}</text></view>
     <block wx:for="{{metrics[metric].records}}" wx:key="id">
-      <template is="record" data="{{record: item, follow: false, busy: busy}}" />
+      <template is="record" data="{{record: item}}" />
     </block>
     <view class="empty" wx:if="{{!metrics[metric].value}}">暂无符合条件的记录</view>
   </view>
@@ -85,11 +223,15 @@
   <view class="screen">
     <view wx:if="{{notice}}" class="notice">{{notice}}</view>
     <view wx:if="{{view ? !isHome : false}}" class="panel account-summary">
-      <view class="line"><view><view class="heading">{{view.actor.name}}</view><view class="muted">账号 {{view.actor.account}}</view></view>
-        <button class="secondary" bindtap="logout" disabled="{{busy}}">退出登录</button></view>
-      <button wx:if="{{view.actor.role === 'investor'}}" class="secondary edit-name" bindtap="toggleName" disabled="{{busy}}">{{editingName ? '取消修改' : '修改显示名称'}}</button>
-      <button class="secondary edit-name" bindtap="toggleSecurity" disabled="{{busy}}">{{security ? '关闭账号安全' : '账号安全'}}</button>
-      <navigator wx:if="{{view.actor.role === 'sales' || view.actor.role === 'investor'}}" class="secondary edit-name" url="/pages/registry/index">律所登记记录</navigator>
+      <view class="business-account-head">
+        <view class="business-avatar" aria-hidden="true"><view class="portrait-head"></view><view class="portrait-body"></view></view>
+        <view class="business-account-id"><view class="heading">{{view.actor.name}}</view><view class="muted">{{view.actor.role === 'investor' ? '股民' : view.actor.role === 'broker' ? '券商' : '销售'}}账号 {{view.actor.account}}</view></view>
+      </view>
+      <view class="business-account-actions">
+        <button wx:if="{{view.actor.role === 'investor'}}" class="business-inline" bindtap="toggleName" disabled="{{busy}}">{{editingName ? '取消修改' : '修改显示名称'}}</button>
+        <button class="business-inline" bindtap="toggleSecurity" disabled="{{busy}}">{{security ? '关闭账号安全' : '账号安全'}}</button>
+        <button class="business-inline" bindtap="logout" disabled="{{busy}}">退出登录</button>
+      </view>
       <form wx:if="{{editingName}}" bindsubmit="submit" data-type="name">
         <label>显示名称<input name="name" value="{{view.actor.name}}" maxlength="40" /></label>
         <button class="primary" form-type="submit" disabled="{{busy}}">保存名称</button>
@@ -118,8 +260,26 @@
     <view wx:if="{{!view}}" class="empty">{{busy ? '正在加载业务数据…' : '暂无可显示的数据'}}</view>
     <block wx:elif="{{view.actor.role === 'investor'}}">
       <block wx:if="{{isHome}}">
-        <view class="hero"><text>沪紫律师事务所</text><view class="title">了解股票索赔</view><view>提交资料，由律所人员联系并评估索赔条件。</view></view>
-        <form class="panel" bindsubmit="submit" data-type="lead">
+        <template is="home-card" data="{{view}}" />
+        <block wx:if="{{view.investorHome}}">
+          <navigator class="home-stats" url="/pages/registry/index?presentation=home">
+            <view class="home-stat"><view class="home-figure">{{view.investorHome.totalRecords}}<text>条</text></view><text>全部记录</text></view>
+            <view class="home-stat"><view class="home-figure">{{view.investorHome.caseCount}}<text>件</text></view><text>案件</text></view>
+            <view class="home-stat"><view class="home-figure">{{view.investorHome.leadCount}}<text>条</text></view><text>未建案留资</text></view>
+          </navigator>
+          <view wx:if="{{view.investorHome.unclassifiedCount}}" class="home-explainer">另有 {{view.investorHome.unclassifiedCount}} 条登记待核对。</view>
+          <view class="home-section-head"><view class="home-heading">最近记录</view><navigator class="home-more" url="/pages/registry/index?presentation=home">查看全部 ›</navigator></view>
+          <view wx:if="{{view.investorHome.recent.length}}" class="home-recent">
+            <button class="home-record" wx:for="{{view.investorHome.recent}}" wx:key="id" bindtap="openProgress" data-kind="{{item.kind}}" data-id="{{item.progressId}}">
+              <view class="home-record-icon {{item.kind === 'lead' ? 'home-icon-lead' : ''}}" aria-hidden="true"><view class="home-icon-paper"></view></view>
+              <view class="home-record-copy"><view class="home-stock">{{item.stockName || '股票名称待核对'}}</view><view wx:if="{{item.caseTitle && item.caseTitle !== item.stockName}}" class="home-meta">{{item.caseTitle}}</view><view class="home-meta"><text wx:if="{{item.stockCode}}">{{item.stockCode}} · </text>{{item.registeredOn ? item.registeredOn + ' 登记' : '登记日期待核对'}}</view></view>
+              <text class="home-state {{item.status === '待您补充材料' || item.status === '待补充材料' ? 'home-state-attention' : ''}}">{{item.status || '进度待同步'}}</text><text class="home-chevron" aria-hidden="true">›</text>
+            </button>
+          </view>
+          <view wx:else class="home-empty">尚无登记记录</view>
+        </block>
+        <button class="home-consult" bindtap="toggleConsultation" aria-expanded="{{consultationOpen}}"><text>{{consultationOpen ? '收起咨询资料表单' : '提交咨询资料'}}</text><text aria-hidden="true">{{consultationOpen ? '−' : '＋'}}</text></button>
+        <form wx:if="{{consultationStarted}}" hidden="{{!consultationOpen}}" class="panel home-consult-form" bindsubmit="submit" data-type="lead">
           <view class="heading">提交咨询资料</view>
           <label>姓名<input name="name" maxlength="40" /></label>
           <label>手机号码<input name="phone" type="number" maxlength="11" bindinput="clearPhoneError"
@@ -132,73 +292,45 @@
         </form>
       </block>
       <block wx:else>
-        <view class="hero"><text>股民端</text><view class="title">我的留资记录</view><view>查看已提交的咨询与当前案件状态。</view></view>
         <view wx:if="{{view.contact}}" class="panel profile-contact">
           <view><view class="muted">留资姓名</view><view class="strong">{{view.contact.name}}</view></view>
           <view><view class="muted">留资手机号</view><view class="strong">{{view.contact.phone}}</view></view>
         </view>
-        <view class="panel"><view class="heading">留资记录</view><view class="muted">排序：{{view.orderLabels.leads || '按留资日期从新到旧。'}}</view>
-          <button class="record lead-button" wx:for="{{view.leads}}" wx:key="id" bindtap="openProgress" data-kind="lead" data-id="{{item.id}}">
-            <view class="line"><text class="strong">{{item.stockName}} · {{item.stockCode}}</text><text class="tag">{{item.cases.length ? item.cases.length + ' 件案件' : '留资'}}</text></view>
-            <view class="line"><text class="muted">{{item.createdOn}}</text><text class="progress-link">查看进度 ›</text></view></button>
-          <view wx:if="{{!view.leads.length}}" class="empty">暂无留资记录</view></view>
+        <template is="user-records" data="{{view, recordList}}" />
         <view class="panel"><view class="heading">转介绍</view><button class="secondary" open-type="share">分享咨询入口</button></view>
       </block>
     </block>
     <block wx:elif="{{view.actor.role === 'sales'}}">
       <block wx:if="{{isHome}}">
-        <view class="hero"><text>销售端</text><view class="title">销售工作台</view><view>跟进你的券商推荐的留资，以及分派给你的其他留资。</view></view>
-        <view class="panel">
-          <view class="line"><view class="heading">我的登记客户</view><text class="muted">{{view.registryCount || 0}} 条登记</text></view>
-          <view class="muted">排序：{{view.registryOrderLabel || view.orderLabels.registryPreview || '按材料登记日期从新到旧，缺少日期的记录在最后。'}}</view>
-          <button class="record lead-button" wx:for="{{view.registryPreview}}" wx:key="rowKey" bindtap="openProgress" data-kind="registry" data-id="{{item.rowKey}}">
-            <view class="line"><text class="strong">{{item.customer}}</text><text class="progress-link">查看进度 ›</text></view>
-            <view class="muted">{{item.stockName}} {{item.stockCode}}</view>
-            <view class="muted">材料登记日期 {{item.registeredOn || '待核对'}}</view>
-            <view class="tag">{{item.stage || '进度待核对'}}</view>
-          </button>
-          <view wx:if="{{!view.registryCount}}" class="empty">暂无已关联的登记记录</view>
-          <navigator class="secondary edit-name" url="/pages/registry/index">查看全部登记记录</navigator>
-        </view>
-        <view class="panel"><view class="heading">分派给我的留资</view><view class="muted">排序：{{view.orderLabels.assignedLeads || '按留资日期从新到旧。'}}</view><view class="chips">
-          <button class="chip {{followFilter === '待跟进' ? 'selected' : ''}}" bindtap="pickFollow" data-status="待跟进">待跟进</button>
-          <button class="chip {{followFilter === '已跟进' ? 'selected' : ''}}" bindtap="pickFollow" data-status="已跟进">已跟进</button>
-          <button class="chip {{followFilter === '' ? 'selected' : ''}}" bindtap="pickFollow" data-status="">全部</button></view>
-          <view class="muted">共 {{assignedRecords.length}} 条</view>
-          <view class="record" wx:for="{{assignedRecords}}" wx:key="id">
-            <view class="line"><text class="strong">{{item.name}}</text><text class="tag">{{item.status}}</text></view>
-            <view class="muted">{{item.number}} · {{item.createdOn}}</view>
-            <view>{{item.stockName}} · {{item.stockCode}}</view><view class="muted">核对公司 {{item.companyName}}</view>
-            <view class="muted">手机 {{item.phone}} · 渠道 {{item.brokerName || '自然流入'}}</view>
-            <button class="progress-button" bindtap="openProgress" data-kind="lead" data-id="{{item.id}}">查看留资进度 ›</button>
-            <button class="progress-button" wx:for="{{item.cases}}" wx:for-item="record" wx:key="id" bindtap="openProgress" data-kind="case" data-id="{{record.id}}">案件 {{record.title}} · {{record.status}} ›</button>
-            <view class="muted" wx:for="{{item.followups}}" wx:for-item="note" wx:key="id">{{note.salesName}} · {{note.note}}</view>
-            <form bindsubmit="submit" data-type="followup" data-id="{{item.id}}" data-version="{{item.version}}" class="follow">
-              <input name="note" placeholder="填写本条留资的跟进记录" maxlength="500" />
-              <button class="secondary" form-type="submit" disabled="{{busy}}">保存跟进</button></form>
-          </view><view class="empty" wx:if="{{!assignedRecords.length}}">暂无分配给你的留资</view>
-        </view>
-        <form class="panel" bindsubmit="submit" data-type="cooperation"><view class="heading">登记合作</view>
-          <label>券商名称<input name="name" maxlength="100" /></label><view class="label">签约日期</view>
+        <template is="home-card" data="{{view, recordList}}" />
+        <form id="home-cooperation" class="panel" bindsubmit="submit" data-type="cooperation"><view class="heading">登记合作</view>
+          <label>券商名称<input name="name" maxlength="100" focus="{{cooperationFocused}}" bindblur="blurCooperation" /></label><view class="label">签约日期</view>
           <picker mode="date" value="{{signedOn}}" bindchange="pickDate"><view class="input">{{signedOn}}</view></picker>
           <button class="primary" form-type="submit" disabled="{{busy}}">保存签约绑定</button></form>
+        <template is="user-records" data="{{view, recordList}}" />
       </block>
       <block wx:else>
-        <view class="hero"><text>销售端</text><view class="title">销售数据统计</view><view>包含名下客户、股票记录及已关联的历史登记。</view></view>
-        <view class="panel"><view class="muted">一位客户可能涉及多只股票。小程序留资在首页逐条查看，历史登记可检索对应股票进度。</view>
-          <navigator class="secondary" open-type="switchTab" url="/pages/home/index">回首页查看留资</navigator>
-          <navigator class="secondary edit-name" url="/pages/registry/index">查看全部登记记录</navigator>
-        </view>
-        <template is="period-board" data="{{view, isHome, ledger, salesBoard, boardSelected, boardPeriod, boardFrom, boardTo, boardMetric, boardLoading, boardError, boardDateError, boardPage, boardPages}}" />
+        <button class="business-menu" bindtap="openCustomerRecords">查看客户与股票 <text aria-hidden="true">›</text></button>
+        <template is="period-board" data="{{view, recordList, isHome, salesBoard, boardSelected, boardExpanded, boardPeriod, boardFrom, boardTo, boardMetric, boardLoading, boardError, boardDateError, boardPage, boardPages}}" />
       </block>
     </block>
     <block wx:else>
-      <view class="hero"><text>券商端</text><view class="title">{{view.broker.name}}</view><view>{{isHome ? '客户与案件统计' : '名下客户台账'}}</view></view>
       <block wx:if="{{isHome}}">
-        <view class="panel"><view class="heading">专属推广码</view><view class="muted">测试码 {{view.broker.code}}</view>
-          <view class="chips"><button class="secondary" bindtap="copyCode">复制测试码</button><button class="secondary" open-type="share">分享入口</button></view></view>
+        <template is="home-card" data="{{view, salesBoard, boardError}}" />
+        <template is="period-board" data="{{view, recordList, isHome, salesBoard, boardSelected, boardExpanded, boardPeriod, boardFrom, boardTo, boardMetric, boardDraft, boardQ, boardLedger, boardLoading, boardError, boardDateError, boardPage, boardPages}}" />
       </block>
-      <template is="period-board" data="{{view, isHome, ledger, salesBoard, boardSelected, boardPeriod, boardFrom, boardTo, boardMetric, boardLoading, boardError, boardDateError, boardPage, boardPages}}" />
+      <view wx:else class="panel">
+        <view class="heading">推广与分享</view>
+        <block wx:if="{{view.broker.code}}">
+          <view class="promo-preview">
+            <image class="promo-preview-image" src="/assets/promo-placeholder.png" mode="aspectFit" aria-hidden="true" />
+            <view class="muted">演示占位码，暂不可扫码</view>
+          </view>
+          <view class="muted">专属推广码</view><text class="promo-code" selectable="true">{{view.broker.code}}</text>
+          <view class="promo-actions"><button class="secondary" bindtap="copyCode">复制推广码</button><button class="secondary" open-type="share">分享推广入口</button></view>
+        </block>
+        <view wx:else class="empty">暂无专属推广码</view>
+      </view>
     </block>
   </view>
 </template>

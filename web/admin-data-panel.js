@@ -1,5 +1,3 @@
-import { orderLabels } from './list-order.js';
-
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const display = value => escape(value === '' || value == null ? '—' : value);
 const types = { records: '留资与登记', customers: '客户档案', channels: '来源渠道', cases: '客户案件', signed: '已签约档案', sales: '销售汇总' };
@@ -12,6 +10,15 @@ const select = (name, options, value = '', attributes = '') => `<select name="${
 const validDate = value => /^\d{4}-\d{2}-\d{2}$/.test(value || '') && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 const filterDefaults = { sourceKey: '', salesId: '', origin: 'all', status: 'all', q: '' };
 const headings = { channels: '渠道管理', cases: '客户案件', reports: '数据报表' };
+const actionNote = note => /缺少有效登记日期|登记日期晚于今天|未来日期|请.*核对/.test(note);
+function dataNotes(data) {
+  const values = [data.definition, ...(data.notes || [])].filter(Boolean);
+  const paragraph = note => `<p class="muted">${escape(note)}</p>`;
+  const guidance = values.filter(note => !actionNote(note));
+  return values.filter(actionNote).map(paragraph).join('') +
+    (data.meta?.futureRegistryCount ? `<p class="muted">另有 ${escape(data.meta.futureRegistryCount)} 条登记日期晚于今天，暂未计入统计，请核对日期。</p>` : '') +
+    (guidance.length ? `<details class="panel"><summary>数据说明</summary>${guidance.map(paragraph).join('')}</details>` : '');
+}
 
 export function adminDataQuery(state, exporting = false) {
   const params = { type: state.type, period: state.period, sourceKey: state.sourceKey, salesId: state.salesId, origin: state.origin, status: state.status, q: state.q };
@@ -21,7 +28,7 @@ export function adminDataQuery(state, exporting = false) {
 }
 
 export function renderAdminDataPanel(data, state, { page = 'reports', today = '', choices = {}, loading = false, exporting = false, dateError = '', error = '', notice = '' } = {}) {
-  const periodLabel = state.period === 'all' ? '累计全部数据（含历史同步）' : state.period === 'month' ? data ? `本月：${data.from} 至 ${data.to}` : '本月（截至今天）' : `自选日期：${state.from} 至 ${state.to}`;
+  const periodLabel = state.period === 'all' ? '全部时间' : state.period === 'month' ? data ? `本月：${data.from} 至 ${data.to}` : '本月（截至今天）' : `自选日期：${state.from} 至 ${state.to}`;
   const typeSelector = page === 'reports' ? field('报表类型', select('type', Object.entries(types), state.type, 'data-admin-data-type')) : '';
   const sourceOptions = [['', '全部来源'], ...(choices.sources || []).map(row => [row.key, row.name])];
   const salesOptions = [['', '全部销售'], ...(choices.sales || []).map(row => [row.id, row.name])];
@@ -30,7 +37,7 @@ export function renderAdminDataPanel(data, state, { page = 'reports', today = ''
   for (const [options, selected] of [[sourceOptions, state.draft.sourceKey], [salesOptions, state.draft.salesId], [statusOptions, state.draft.status]]) {
     if (selected && !options.some(([key]) => key === selected)) options.push([selected, '当前筛选（待加载）']);
   }
-  const controls = panel(headings[page] || '数据查询', `<p>包含小程序业务与已同步的历史登记。按登记日期查看当前状态，明细和导出使用同一筛选。</p>
+  const controls = panel(headings[page] || '数据查询', `
     ${typeSelector ? `<div class="inline-form admin-data-type">${typeSelector}</div>` : ''}
     <div class="overview-period-bar"><div class="filters" aria-label="统计期间">${['all', 'month'].map(value => button('period', value === 'all' ? '全部' : '本月', `data-period="${value}" aria-pressed="${state.period === value}"`, `chip${state.period === value ? ' selected' : ''}`)).join('')}</div>${button('refresh', '刷新数据')}</div>
     <form data-admin-data-form="dates" class="inline-form overview-dates" novalidate>
@@ -51,14 +58,14 @@ export function renderAdminDataPanel(data, state, { page = 'reports', today = ''
   if (data) {
     const unit = units[state.type] || '条';
     const header = `<div class="overview-detail-heading"><h2>${escape(data.title || types[state.type])}</h2>${button('export', exporting ? '正在导出…' : '导出 Excel', exporting || loading ? 'disabled' : '')}</div>
-      <p data-admin-data-count aria-live="polite">共 ${escape(data.total)} ${escape(unit)} · 导出当前查询的全部结果</p><p class="muted">修改筛选后请点击查询，再导出结果。</p>${data.definition ? `<p class="muted">${escape(data.definition)}</p>` : ''}<p class="muted" data-order-label>排序：${escape(data.orderLabel || (state.type === 'channels' ? orderLabels.sources : state.type === 'sales' ? orderLabels.sales : orderLabels.recent))}</p>`;
+      <p data-admin-data-count aria-live="polite">共 ${escape(data.total)} ${escape(unit)} · 导出当前查询的全部结果</p><p class="muted">修改筛选后请点击查询，再导出结果。</p>`;
     const rows = data.items.length ? `<div class="table-wrap"><table><thead><tr>${data.columns.map(column => `<th scope="col">${escape(column.label)}</th>`).join('')}${state.type === 'channels' ? '<th scope="col">操作</th>' : ''}</tr></thead><tbody>${data.items.map(row => `<tr>${data.columns.map(column => {
       const value = column.key === 'origin' ? origins[row.origin] || row.origin : row[column.key];
       return `<td><span class="${['title', 'name', 'source', 'sales', 'subtitle', 'stockName'].includes(column.key) ? 'wrap-cell' : ''}">${display(value)}</span></td>`;
     }).join('')}${state.type === 'channels' ? `<td>${button('source-records', '查看留资与登记', `data-source-key="${escape(row.sourceKey || row.key || row.id)}" data-source-name="${escape(row.title || row.name)}"`)}</td>` : ''}</tr>`).join('')}</tbody></table></div>` : '<div class="empty">当前范围暂无符合条件的数据</div>';
     const pages = Math.max(1, Math.ceil(data.total / data.limit));
     const pager = `<nav class="list-pagination" aria-label="业务数据分页">${button('page', '上一页', `data-offset="${Math.max(0, data.offset - data.limit)}"${data.offset === 0 ? ' disabled' : ''}`)}<span>第 ${Math.floor(data.offset / data.limit) + 1} / ${pages} 页 · 每页 ${escape(data.limit)} 条</span>${button('page', '下一页', `data-offset="${data.offset + data.limit}"${data.offset + data.limit >= data.total ? ' disabled' : ''}`)}</nav>`;
-    content = panel('', header + rows + pager) + (data.notes?.length ? panel('统计说明', data.notes.map(note => `<p class="muted">${escape(note)}</p>`).join('')) : '');
+    content = panel('', header + rows + pager) + dataNotes(data);
   }
   return controls + content + (loading ? panel('', '<p role="status">正在加载业务数据…</p>') : '') +
     (error ? panel('', `<p class="overview-error" role="alert">${escape(error)}</p>${button('refresh', '重新加载')}`) : '') +

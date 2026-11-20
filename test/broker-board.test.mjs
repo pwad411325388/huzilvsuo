@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createBrokerBoard } from '../broker-board.mjs';
 import { RequestError } from '../store.mjs';
 
-function fixture(t) {
+function fixture(t, userRecords) {
   const db = new DatabaseSync(':memory:');
   t.after(() => db.close());
   db.exec(`CREATE TABLE clients(id TEXT,name TEXT,phone TEXT,brokerId TEXT,createdAt TEXT);
@@ -23,7 +23,7 @@ function fixture(t) {
     INSERT INTO cases VALUES ('closed','new-lead','新股票索赔','已结案','2026-11-17'),
       ('old-case','old-lead','早期案件','已受理','2020-02-02'),
       ('outside-case','other-lead','不能看到案件','已结案','2026-11-17');`);
-  const board = createBrokerBoard(db, { transaction: fn => fn(), today: () => '2026-11-19',
+  const board = createBrokerBoard(db, { userRecords, transaction: fn => fn(), today: () => '2026-11-19',
     requireValue(ok, message, status = 400) { if (!ok) throw new RequestError(status, message); } });
   return { db, board: (input = {}, actor = { role:'broker', id:'broker-a' }) => board(actor,input) };
 }
@@ -99,6 +99,29 @@ test('未来记录不掩盖今天的注册客户；缺日期只累计；20条稳
   assert.throws(()=>board({},{role:'broker',id:'broker-a',passwordChangeRequired:true}),error=>error.status===403);
 });
 
+test('券商五条分页连续无重漏，筛选与隐私范围不受每页数量影响', t => {
+  const { db, board } = fixture(t);
+  const insert = db.prepare('INSERT INTO clients VALUES (?,?,?,?,?)');
+  for (let n = 0; n < 11; n++) insert.run('five-' + n, '分页客户' + n, '19900000099', 'broker-a', '2026-11-10');
+  const original = board();
+  assert.equal(original.limit, 20);
+  assert.deepEqual(board({ limit: '20' }).items, original.items);
+  const pages = [0, 5, 10].map(offset => board({ limit: '5', offset }));
+  assert.deepEqual(pages.map(page => page.items.length), [5, 5, 4]);
+  assert.ok(pages.every(page => page.limit === 5 && page.total === 14 && page.metrics.find(metric => metric.key === 'customers').value === 14));
+  assert.deepEqual(pages.flatMap(page => page.items), original.items);
+  assert.equal(new Set(pages.flatMap(page => page.items).map(item => item.id)).size, 14);
+  assert.equal(board({ limit: 5, offset: 9999 }).offset, 10);
+  assert.equal(board({ limit: 5, offset: 7 }).offset, 5);
+  const day = board({ limit: 5, period: 'custom', from: '2026-11-10', to: '2026-11-10', offset: 10 });
+  assert.equal(day.total, 11); assert.equal(day.items.length, 1);
+  assert.doesNotMatch(JSON.stringify(pages), /19900000099|别人的客户|不能看到/);
+  for (const limit of [0, 1, 10, 21, -5, 5.5, null, '', true, '05', '5.0', ' 5 ', [], {}]) {
+    assert.throws(() => board({ limit }), error => error.status === 400);
+  }
+  assert.throws(() => board({ limit: 5 }, { role: 'sales', id: 'broker-a' }), error => error.status === 403);
+});
+
 test('券商客户跨三页保持日期排序和唯一性，签约以实际发生日独立排序', t => {
   const { db, board } = fixture(t);
   const insert = db.prepare('INSERT INTO clients VALUES (?,?,?,?,?)');
@@ -115,4 +138,119 @@ test('券商客户跨三页保持日期排序和唯一性，签约以实际发�
   const signed = board({ metric: 'signings' });
   assert.deepEqual(signed.items.map(row => row.signedOn), ['2026-11-18', '2026-11-17', '2026-11-01', '2025-01-01']);
   assert.match(signed.orderLabel, /实际签约日期/);
+});
+
+
+test('券商统计和统一记录使用相同的已关联客户档案，客户不重复且签约日期不补造', t => {
+  const records = [{ id: 'registry:linked', customerId: 'old', clientId: 'old', recordKind: 'registry', customer: '老客户',
+    stockName: '已关联股票', stockCode: '123456', registeredOn: '2025-05-01', status: '已受理', caseGroup: 'ongoing', signed: true }];
+  const { db, board } = fixture(t, { all: () => records });
+  db.exec('DELETE FROM signings');
+  const full = board();
+  assert.equal(full.total, 3, '已有客户新增股票不重复计人');
+  const customer = full.items.find(row => row.id === 'old');
+  assert.equal(customer.customerId, 'old');
+  assert.equal(customer.recordCount, 3);
+  assert.match(customer.subtitle, /已关联股票/);
+  assert.equal(board({ metric: 'ongoing' }).total, 2);
+  assert.equal(board({ metric: 'effective' }).total, 1);
+  assert.equal(board({ metric: 'signings' }).total, 0, '已签约状态不能充当实际签约发生日');
+  const earlier = board({ period: 'custom', from: '2025-05-01', to: '2025-05-01' });
+  assert.equal(earlier.total, 1); assert.equal(earlier.items[0].recordCount, 1);
+  assert.doesNotMatch(earlier.items[0].subtitle, /新股票|旧股票/);
+  assert.equal(earlier.metrics.find(row => row.key === 'ongoing').value, 1);
+  assert.ok(board({ metric: 'ongoing' }).items.every(row => row.customerId === 'old'));
+  records.splice(0);
+  assert.equal(board().items.find(row => row.id === 'old').recordCount, 2);
+  assert.equal(board({ metric: 'ongoing' }).total, 1);
+});
+
+test('券商搜索只筛选当前明细，指标不变，客户股票摘要保持当前期间范围', t => {
+  const {db,board}=fixture(t);
+  const baseline=board({period:'month'});
+  assert.equal(baseline.q,'');assert.equal(baseline.scopeTotal,baseline.total);
+  for(const q of ['老客户','新股票','000002','  新股票  ']) {
+    const found=board({period:'month',q});
+    assert.equal(found.q,q.trim());assert.equal(found.total,1);assert.equal(found.scopeTotal,3);
+    assert.deepEqual(found.metrics,baseline.metrics);assert.equal(found.items[0].recordCount,1);
+    assert.equal(found.items[0].id,'old');assert.doesNotMatch(found.items[0].subtitle,/旧股票/);
+  }
+  assert.equal(board({period:'month',q:'旧股票'}).total,0,'本期搜索不凭期间外股票拉入客户');
+  const all=board({q:'旧股票'});
+  assert.equal(all.total,1);assert.equal(all.items[0].recordCount,2);
+  assert.match(all.items[0].subtitle,/旧股票/);assert.match(all.items[0].subtitle,/新股票/);
+  const caseFound=board({metric:'closed',q:'新股票索赔'});
+  assert.equal(caseFound.total,1);assert.equal(caseFound.scopeTotal,1);assert.equal(caseFound.items[0].id,'closed');
+  assert.equal(board({metric:'ongoing',q:'早期案件'}).items[0].id,'old-case');
+  assert.equal(board({metric:'closed',q:'000002'}).total,1,'案件搜索包含未显示于案件标题的股票代码');
+  for(const metric of baseline.metrics) assert.ok(metric.description);
+  assert.equal(baseline.metrics.find(row=>row.key==='effective').label,'已签约客户');
+  assert.equal(board().metrics.find(row=>row.key==='signings').label,'签约登记人数');
+  assert.match(baseline.metrics.find(row=>row.key==='effective').description,/不要求填写签约日期/);
+  assert.match(baseline.metrics.find(row=>row.key==='signings').description,/实际签约日期/);
+  assert.equal(board({metric:'effective',ledger:'negotiating',q:'老客户'}).total,0);
+  assert.equal(board({metric:'signings',period:'custom',from:'2026-11-17',to:'2026-11-17',q:'旧股票'}).total,1,
+    '签约事件按实际签约日，股票搜索仍覆盖该客户全部授权档案');
+  db.exec("UPDATE clients SET brokerId='broker-b' WHERE id='old'");
+  assert.equal(board({q:'老客户'}).total,0);assert.equal(board({metric:'closed',q:'新股票'}).total,0);
+});
+
+test('券商姓名股票查询规范化，不受摘要截断影响，不搜电话或扩大授权', t => {
+  const {db,board}=fixture(t);
+  const insert=db.prepare('INSERT INTO leads VALUES (?,?,?,?,?)');
+  for(let n=0;n<10;n++)insert.run('search-'+n,'old',n===9?'ＡｎＴ 隐藏股票':'普通股票'+n,'CODE'+n,'2026-11-10');
+  const found=board({q:' ant 隐藏股票 '});
+  assert.equal(found.total,1);assert.equal(found.items[0].recordCount,12);
+  assert.doesNotMatch(found.items[0].subtitle,/隐藏股票/,'摘要8项上限不影响完整检索');
+  assert.equal(board({q:'ｃｏｄｅ９'}).total,1);
+  assert.equal(board({q:'19900000001'}).total,0,'不搜手机号');
+  for(const q of ['不能看到','别人的客户',"' OR 1=1 --",'%','_','<script>alert(1)</script>']) {
+    const result=board({q});assert.equal(result.total,0);assert.equal(result.scopeTotal,3);
+    assert.deepEqual(result.metrics,board().metrics);
+  }
+  assert.doesNotMatch(JSON.stringify(found),/19900000001|searchTerms|progressId|contract/);
+  for(const q of [null,123,{},[],true,'字'.repeat(101)]) assert.throws(()=>board({q}),error=>error.status===400);
+  assert.equal(board({q:'字'.repeat(100)}).total,0);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM leads').get().n,13);
+});
+
+test('券商搜索在授权日期集合内完整分页，筛前数量与指标一致，末页夹紧无重漏', t => {
+  const {db,board}=fixture(t), insert=db.prepare('INSERT INTO clients VALUES (?,?,?,?,?)');
+  for(let n=0;n<13;n++)insert.run('match-'+n,'检索客户'+n,'','broker-a',n===12?'2020-01-01':'2026-11-10');
+  insert.run('private-match','检索客户-其他券商','','broker-b','2026-11-10');
+  const filters={period:'month',q:'检索客户',limit:5};
+  const pages=[0,5,10].map(offset=>board({...filters,offset}));
+  assert.deepEqual(pages.map(row=>row.items.length),[5,5,2]);
+  assert.ok(pages.every(row=>row.total===12 && row.scopeTotal===15 && row.metrics.find(metric=>metric.key==='customers').value===15));
+  const items=pages.flatMap(row=>row.items);assert.equal(new Set(items.map(row=>row.id)).size,12);
+  assert.deepEqual(items,board({...filters,limit:20}).items);
+  assert.deepEqual(board({...filters,offset:9999}).items,pages[2].items);
+  assert.equal(board({...filters,q:'未命中',offset:9999}).offset,0);
+  assert.equal(board({...filters,q:'检索客户12'}).total,0);
+});
+
+test('签约状态与文本只筛明细，概览及缺日期提示不变，scopeTotal为状态筛选后数量', t=>{
+  const {db,board}=fixture(t);
+  db.exec("INSERT INTO clients VALUES ('unknown-date','缺日期客户','','broker-a','')");
+  for(const period of ['all','month']) {
+    const base=board({period}), customerCount=base.metrics.find(row=>row.key==='customers').value;
+    for(const ledger of ['signed','negotiating']) {
+      const narrowed=board({period,ledger}), searched=board({period,ledger,q:'未命中',offset:999});
+      assert.deepEqual(narrowed.metrics,base.metrics);
+      assert.deepEqual(searched.metrics,base.metrics);
+      assert.equal(narrowed.scopeTotal,ledger==='signed'?1:customerCount-1);
+      assert.equal(searched.scopeTotal,narrowed.total);assert.equal(searched.total,0);assert.equal(searched.offset,0);
+    }
+    const emptySigned=board({period,metric:'effective',ledger:'negotiating'});
+    assert.equal(emptySigned.total,0);assert.equal(emptySigned.scopeTotal,0);
+    assert.equal(emptySigned.metrics.find(row=>row.key==='effective').value,1);
+    assert.deepEqual(emptySigned.metrics,base.metrics);
+    for(const metric of ['customers','effective','ongoing','closed']) {
+      assert.ok(!board({period,metric}).notes.some(note=>/签约登记人数|本月新增签约|期间新增签约/.test(note)));
+    }
+    const legacy=board({period,metric:'signings',ledger:'negotiating'});
+    assert.equal(legacy.total,1,'兼容旧签约事件接口，不改变其实际日期统计口径');
+    assert.ok(legacy.notes.some(note=>note.includes('签约登记人数')));
+    assert.deepEqual(legacy.metrics,base.metrics);
+  }
 });

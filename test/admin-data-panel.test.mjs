@@ -15,7 +15,7 @@ test('三页共享全量筛选且报表列按API定义，历史来源能下钻�
   const html = renderAdminDataPanel(data, state(), { choices: data.filters, today: data.today });
   assert.match(html, /data-admin-data-type/); assert.match(html, /data-admin-data-form="dates"/);
   for (const name of ['sourceKey', 'salesId', 'origin', 'status', 'q']) assert.match(html, new RegExp(`name="${name}"`));
-  assert.match(html, /累计全部数据（含历史同步）/); assert.match(html, /共 51 条/); assert.match(html, /合成股票/); assert.match(html, /历史登记/);
+  assert.match(html, /全部时间/); assert.match(html, /共 51 条/); assert.match(html, /合成股票/); assert.match(html, /历史登记/);
   assert.match(html, /导出 Excel/); assert.match(html, /每页 20 条/);
   const dangerous = '<img src=x onerror="bad()">';
   const channels = renderAdminDataPanel(result({ type: 'channels', items: [{ title: dangerous, sourceKey: 'hash"x', origin: 'registry' }] }), state({ type: 'channels' }), { page: 'channels' });

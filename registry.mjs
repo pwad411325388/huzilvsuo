@@ -52,17 +52,19 @@ export function createRegistry(db, { requireValue, transaction, audit }) {
       JOIN identities i ON i.id=l.identity_id AND i.role=? AND i.subjectId=? AND i.status='active'`;
   }
 
-  function progressRecord(actor, key) {
-    authorize(actor, ['investor', 'sales']);
+  function progressRecord(actor, key, projectionRole) {
+    authorize(actor, projectionRole ? ['admin'] : ['investor', 'sales']);
+    requireValue(!projectionRole || ['investor','sales'].includes(projectionRole),'预览角色无效');
+    const role = projectionRole || actor.role;
     if (!imported() || !/^[a-f0-9]{64}$/.test(key)) return null;
     const columns = new Set(all('PRAGMA table_info(registry_entries)').map(col => col.name));
     const newer = ['progress_stage', 'progress_node'];
-    if (actor.role === 'sales') newer.push('contract_number');
+    if (role === 'sales') newer.push('contract_number');
     const extras = newer.filter(col => columns.has(col)).map(col => ',e.' + col).join('');
     return one(`SELECT e.entry_key AS internalId,e.customer,e.stock_name AS stockName,e.stock_code AS stockCode,
       e.stage AS sourceStatus,e.filed_on AS filedOn,e.registered_on AS registeredOn${extras}
-      FROM registry_entries e ${accountScope(actor.role)}
-      WHERE registry_public_key(e.entry_key)=?`, actor.role, actor.id, key);
+      FROM registry_entries e ${projectionRole ? '' : accountScope(role)}
+      WHERE registry_public_key(e.entry_key)=?`, ...(projectionRole ? [key] : [role, actor.id, key]));
   }
 
   function list(actor, input, pageSize = limit) {
